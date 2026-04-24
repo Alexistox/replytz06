@@ -1,9 +1,9 @@
 module.exports = {
   // Telegram API credentials (https://my.telegram.org/apps)
   // Docker: đặt TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER trong docker-compose.yml
-  apiId: process.env.TELEGRAM_API_ID || '30863026',
-  apiHash: process.env.TELEGRAM_API_HASH || '41ddc59d6993fb9623f65f03e17cea2b',
-  phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || '+84384306798',
+  apiId: process.env.TELEGRAM_API_ID || '30xxx',
+  apiHash: process.env.TELEGRAM_API_HASH || '41ddc59d6993fb9623f65xxxxx',
+  phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || '+857234594',
 
   // File lưu session sau đăng nhập (ưu tiên đọc file này nếu có). Docker: có thể TELEGRAM_SESSION_FILE
   sessionFile: process.env.TELEGRAM_SESSION_FILE || './telegram.session',
