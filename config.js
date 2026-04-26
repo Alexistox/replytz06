@@ -18,6 +18,9 @@ sessionString: "",
   copyAllMaxCollect: parseInt(process.env.COPYALL_MAX_COLLECT || '5000', 10),
   copyAllMaxCopy: parseInt(process.env.COPYALL_MAX_COPY || '5000', 10),
 
+  /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove) */
+  permanentAdminUserIds: ['5002535760'],
+
   // Default settings
   defaultSettings: {
     replyMessage: '1', // Tin nhắn reply

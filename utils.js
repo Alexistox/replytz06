@@ -565,30 +565,52 @@ class Utils {
 
   // ================== ADMIN MANAGEMENT ==================
 
+  static getPermanentAdminUserIds() {
+    const raw = config.permanentAdminUserIds;
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw.map((id) => String(id).trim()).filter(Boolean);
+  }
+
+  static isPermanentAdmin(userId) {
+    const id = String(userId == null ? '' : userId).trim();
+    if (!id) return false;
+    return Utils.getPermanentAdminUserIds().includes(id);
+  }
+
   // Add admin user
   static addAdmin(settings, userId) {
     if (!settings.adminUsers) {
       settings.adminUsers = [];
     }
-    
+
     const userIdStr = userId.toString();
-    
+
+    if (Utils.isPermanentAdmin(userIdStr)) {
+      return { success: false, message: 'User này đã là admin cố định (config)' };
+    }
+
     if (settings.adminUsers.includes(userIdStr)) {
       return { success: false, message: 'User đã là admin rồi' };
     }
-    
+
     settings.adminUsers.push(userIdStr);
     return { success: true, message: 'Đã thêm admin thành công' };
   }
 
   // Remove admin user
   static removeAdmin(settings, userId) {
+    const userIdStr = userId.toString();
+    if (Utils.isPermanentAdmin(userIdStr)) {
+      return { success: false, message: 'Không thể xóa admin cố định trong config' };
+    }
+
     if (!settings.adminUsers) {
       settings.adminUsers = [];
       return { success: false, message: 'Không có admin nào' };
     }
-    
-    const userIdStr = userId.toString();
+
     const index = settings.adminUsers.indexOf(userIdStr);
     
     if (index === -1) {
@@ -601,17 +623,35 @@ class Utils {
 
   // Check if user is admin
   static isAdmin(settings, userId) {
+    const userIdStr = userId.toString();
+    if (Utils.isPermanentAdmin(userIdStr)) {
+      return true;
+    }
     if (!settings.adminUsers || settings.adminUsers.length === 0) {
       return false;
     }
-    
-    const userIdStr = userId.toString();
     return settings.adminUsers.includes(userIdStr);
   }
 
-  // Get all admin users
+  // Get all admin users (gồm admin cố định trong config + adminUsers)
   static getAdminList(settings) {
-    return settings.adminUsers || [];
+    const fromSettings = settings.adminUsers || [];
+    const out = [];
+    const seen = new Set();
+    for (const id of Utils.getPermanentAdminUserIds()) {
+      if (!seen.has(id)) {
+        seen.add(id);
+        out.push(id);
+      }
+    }
+    for (const id of fromSettings) {
+      const s = String(id).trim();
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    }
+    return out;
   }
 
   // ================== PIC2 SETTINGS ==================
