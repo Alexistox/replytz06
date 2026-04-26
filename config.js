@@ -24,7 +24,8 @@ sessionString: "",
   // Default settings
   defaultSettings: {
     replyMessage: '1', // Tin nhắn reply
-    calEnabled: false, // /cal on|off (admin) — toàn bot, mọi nhóm/chat
+    calEnabled: false, // /cal on|on admin|off (admin) — toàn bot, mọi nhóm/chat
+    calAdminOnly: false, // khi true: chỉ admin mới gửi biểu thức được tính (cần /cal on admin)
     groupSettings: {}, // Mỗi nhóm: { replyEnabled }
     pic2Settings: {}, // Pic2: { [groupId]: [ { id, enabled, targetUser, replyMessage }, ... ] }
     forwardRules: [], // Rules cho auto forward: { sourceGroupId, destGroupId, trigger, createdBy, createdTime, status }

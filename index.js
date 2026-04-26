@@ -381,8 +381,10 @@ class BankTransactionUserbot {
       const groupSettings = this.settings.groupSettings?.[groupId] || { replyEnabled: false };
 
       // Máy tính /cal toàn bot (độc lập reply giao dịch; chỉ kết quả + quote tin gốc)
-      if (this.settings.calEnabled && messageText.trim()) {
-        if (!Utils.isTransactionMessage(messageText)) {
+      if (this.settings.calEnabled && messageText.trim() && !Utils.isTransactionMessage(messageText)) {
+        const calBlocked =
+          this.settings.calAdminOnly === true && !this.isOwnerOrAdmin(message);
+        if (!calBlocked) {
           const calResult = Utils.tryEvaluateCal(messageText);
           if (calResult.ok) {
             this.processedMessages.set(messageKey, currentTime);
@@ -850,34 +852,63 @@ class BankTransactionUserbot {
     }
   }
 
-  // /cal on|off — chỉ admin; toàn bot: mọi nhóm/chat khi calEnabled
+  // /cal on|on admin|off — chỉ admin; toàn bot: mọi nhóm/chat khi calEnabled
   async handleCalCommand(args, chatId, messageId) {
     if (typeof this.settings.calEnabled !== 'boolean') {
       this.settings.calEnabled = false;
     }
+    if (this.settings.calAdminOnly !== true) {
+      this.settings.calAdminOnly = false;
+    }
 
     if (args.length === 0) {
       const calOn = this.settings.calEnabled ? 'BẬT' : 'TẮT';
+      const who =
+        this.settings.calEnabled && this.settings.calAdminOnly
+          ? '**chỉ admin** mới gửi biểu thức được tính'
+          : this.settings.calEnabled
+            ? '**mọi người** gửi biểu thức đều được tính'
+            : '—';
       await this.sendReply(
         chatId,
         messageId,
-        `⚙️ Máy tính (/cal) **toàn bot**: ${calOn}\nÁp dụng mọi nhóm/kênh/chat. Hậu tố: k/n = nghìn, tr = triệu, tỷ/ty = tỷ\n/cal on hoặc /cal off (admin)`
+        `⚙️ Máy tính (/cal) **toàn bot**: ${calOn}\n${this.settings.calEnabled ? `Chế độ: ${who}.\n` : ''}Áp dụng mọi nhóm/kênh/chat. Hậu tố: k/n = nghìn, tr = triệu, tỷ/ty = tỷ\n**Admin:** /cal on | /cal on admin | /cal off`
       );
       return;
     }
 
     const action = args[0].toLowerCase();
     if (action === 'on') {
+      const onlyAdmin = args.length >= 2 && args[1].toLowerCase() === 'admin';
+      if (args.length >= 2 && !onlyAdmin) {
+        await this.sendReply(
+          chatId,
+          messageId,
+          '❗ Sau **on** chỉ hợp lệ: **admin** (vd: `/cal on admin`) — hoặc dùng `/cal on` để mọi người tính được'
+        );
+        return;
+      }
       this.settings.calEnabled = true;
+      this.settings.calAdminOnly = onlyAdmin;
       Utils.saveSettings(this.settings);
-      Utils.log('🟢 /cal BẬT (toàn bot)');
-      await this.sendReply(
-        chatId,
-        messageId,
-        '✅ Đã BẬT máy tính **toàn bot** (mọi nhóm): gửi biểu thức (vd: 5tr+10k); bot chỉ trả kết quả + quote tin gốc. /cal off để tắt.'
-      );
+      if (onlyAdmin) {
+        Utils.log('🟢 /cal BẬT (toàn bot, chỉ admin)');
+        await this.sendReply(
+          chatId,
+          messageId,
+          '✅ Đã BẬT máy tính **toàn bot** — **chỉ admin** mới gửi biểu thức (vd: 5tr+10k) thì bot trả kết quả. Dùng `/cal on` để cho mọi người tính; `/cal off` để tắt.'
+        );
+      } else {
+        Utils.log('🟢 /cal BẬT (toàn bot, mọi người)');
+        await this.sendReply(
+          chatId,
+          messageId,
+          '✅ Đã BẬT máy tính **toàn bot** (mọi nhóm): mọi người gửi biểu thức (vd: 5tr+10k) — bot trả kết quả + quote tin gốc. `/cal on admin` nếu chỉ muốn admin; `/cal off` để tắt.'
+        );
+      }
     } else if (action === 'off') {
       this.settings.calEnabled = false;
+      this.settings.calAdminOnly = false;
       Utils.saveSettings(this.settings);
       Utils.log('🔴 /cal TẮT (toàn bot)');
       await this.sendReply(chatId, messageId, '❌ Đã TẮT máy tính **toàn bot** (mọi nhóm)');
@@ -885,7 +916,7 @@ class BankTransactionUserbot {
       await this.sendReply(
         chatId,
         messageId,
-        '❗ Dùng: /cal on hoặc /cal off (hoặc /cal để xem trạng thái)'
+        '❗ Dùng: /cal on | /cal on admin | /cal off (hoặc /cal để xem trạng thái)'
       );
     }
   }
@@ -895,7 +926,12 @@ class BankTransactionUserbot {
     const groupId = chatId.toString();
     const groupSettings = this.settings.groupSettings?.[groupId] || { replyEnabled: false };
     const status = groupSettings.replyEnabled ? '🟢 BẬT' : '🔴 TẮT';
-    const calGlobal = this.settings.calEnabled === true ? '🟢 BẬT (toàn bot)' : '🔴 TẮT';
+    const calGlobal =
+      this.settings.calEnabled !== true
+        ? '🔴 TẮT'
+        : this.settings.calAdminOnly === true
+          ? '🟢 BẬT (chỉ admin tính)'
+          : '🟢 BẬT (mọi người tính)';
     const uptime = process.uptime();
     const hours = Math.floor(uptime / 3600);
     const minutes = Math.floor((uptime % 3600) / 60);
@@ -944,7 +980,8 @@ class BankTransactionUserbot {
 📝 Commands:
 /1 on - Bật reply cho nhóm này
 /1 off - Tắt reply cho nhóm này
-/cal on - Bật máy tính toàn bot (admin) 👑
+/cal on - Bật máy tính toàn bot, mọi người gõ biểu thức (admin) 👑
+/cal on admin - Bật máy tính, chỉ admin gõ biểu thức (admin) 👑
 /cal off - Tắt máy tính toàn bot (admin) 👑
 /status - Xem trạng thái  
 /id - Xem ID chat/user
@@ -975,26 +1012,13 @@ class BankTransactionUserbot {
 2. Tự động reply hình ảnh từ user cụ thể trong group cụ thể
 3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
 
-**Định dạng tin nhắn giao dịch (VN):**
-- Tiền vào: +2,000 đ
-- Tài khoản: 20918031 tại ACB  
-- Lúc: 2025-07-20 11:10:22
-- Nội dung CK: ...
-
-**Định dạng tiếng Trung (đủ 4 dòng: 入款 / 账户 / 时间 / 备注):**
-- 入款：+2,000.00元 · 账户：6222****1234 · 时间：2025-07-20 11:10:22 (hoặc 2025年07月20日 11:10:22) · 备注：…
-
-**Commands - Giao dịch:**
-/1 on - Bật chức năng reply giao dịch cho nhóm này
-/1 off - Tắt chức năng reply giao dịch cho nhóm này
-/1 - Xem trạng thái nhóm hiện tại
-
 **Commands - Máy tính (/cal, 👑 chỉ admin bật/tắt — toàn bot):**
-/cal on - Bật: **mọi nhóm/kênh** đều tính được; bot trả **chỉ kết quả** (quote tin gốc)
+/cal on - Bật: **mọi nhóm/kênh** — **mọi người** gửi biểu thức; bot trả **chỉ kết quả** (quote tin gốc)
+/cal on admin - Bật: chỉ **admin** gửi biểu thức mới được tính
 /cal off - Tắt máy tính trên toàn bot
 /cal - Xem trạng thái /cal
 Telegram menu đôi khi gửi \`/cal@TenBot on\` — bot tự bỏ phần \`@...\`.
-/calon — tương đương \`/cal on\` (gõ dính chữ)
+/calon — tương đương \`/cal on\` (gõ dính chữ; mọi người tính được)
 /caloff — tương đương \`/cal off\`
 Hậu tố sau số: \`k\` hoặc \`n\` = nghìn, \`tr\` = triệu, \`tỷ\`/\`ty\` = tỷ. Ví dụ: \`5tr+10k\`, \`sqrt(16)+2*3\`
 Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
@@ -1061,7 +1085,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /adremove user_id - Xóa admin
 
 **Commands - Khác:**
-/cal - Máy tính toàn bot (👑 admin: /cal on|off; xem mục /cal phía trên)
+/cal - Máy tính toàn bot (👑 admin: /cal on | /cal on admin | /cal off; xem mục /cal phía trên)
 /status - Xem thông tin chi tiết bot
 /id - Xem ID nhóm hiện tại
 /id (reply) - Xem ID của user được reply

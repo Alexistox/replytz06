@@ -127,6 +127,7 @@ const commandTests = [
   { input: '/help 2', expected: { command: '/help', args: ['2'] } },
   { input: '/cal@MyUserBot on', expected: { command: '/cal', args: ['on'] } },
   { input: '/cal   on', expected: { command: '/cal', args: ['on'] } },
+  { input: '/cal on admin', expected: { command: '/cal', args: ['on', 'admin'] } },
   { input: 'Không phải command', expected: null },
 ];
 
