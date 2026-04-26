@@ -21,7 +21,8 @@ sessionString: "",
   // Default settings
   defaultSettings: {
     replyMessage: '1', // Tin nhắn reply
-    groupSettings: {}, // Settings reply theo từng group: { [groupId]: { replyEnabled: boolean } }
+    calEnabled: false, // /cal on|off (admin) — toàn bot, mọi nhóm/chat
+    groupSettings: {}, // Mỗi nhóm: { replyEnabled }
     pic2Settings: {}, // Pic2: { [groupId]: [ { id, enabled, targetUser, replyMessage }, ... ] }
     forwardRules: [], // Rules cho auto forward: { sourceGroupId, destGroupId, trigger, createdBy, createdTime, status }
     copyAllWatermark: {}, // /copyall & /newcopy: { "sourceId_destId": lastMessageId }

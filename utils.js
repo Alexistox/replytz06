@@ -708,6 +708,130 @@ class Utils {
     }
     return { timeArg: timeTokens[0].trim(), sourceId: idTokens[0].trim() };
   }
+
+  // ================== CAL (/cal máy tính) ==================
+
+  static _mathCalInstance = null;
+
+  static getMathCal() {
+    if (!Utils._mathCalInstance) {
+      const { create, all } = require('mathjs');
+      Utils._mathCalInstance = create(all, {});
+    }
+    return Utils._mathCalInstance;
+  }
+
+  /** Tránh reply nhầm chat / ngày; số đơn thuần (vd 100) không coi là biểu thức */
+  static isCalCandidate(raw) {
+    if (!raw || typeof raw !== 'string') return false;
+    const line = raw.trim().split('\n')[0].trim();
+    if (!line || line.length > 280) return false;
+    if (!/\d/.test(line)) return false;
+    if (/^\d{4}-\d{1,2}-\d{1,2}\b/.test(line)) return false;
+    if (/\b\d{4}-\d{2}-\d{2}\b/.test(line)) return false;
+    return (
+      /\d\s*(tr|k|n|tỷ|ty)\b/iu.test(line) ||
+      /[+*^/]/.test(line) ||
+      /sqrt|sin|cos|tan|log|exp|abs|pow|floor|ceil|round|mod|\bpi\b|\be\b/i.test(line) ||
+      /\(/.test(line) ||
+      /\d\s*-\s*\d/.test(line)
+    );
+  }
+
+  /** k,n = nghìn; tr = triệu; tỷ, ty = tỷ (sau số) */
+  static preprocessCalExpression(s) {
+    let t = s.trim().split('\n')[0].trim();
+    if (!t) return t;
+    t = t.replace(/(\d+(?:\.\d+)?)\s*(tỷ|ty)\b/gu, '($1*1e9)');
+    t = t.replace(/(\d+(?:\.\d+)?)\s*tr\b/giu, '($1*1e6)');
+    t = t.replace(/(\d+(?:\.\d+)?)\s*[kn]\b/giu, '($1*1e3)');
+    return t;
+  }
+
+  static formatNumberDisplay(n) {
+    if (typeof n !== 'number' || Number.isNaN(n) || !Number.isFinite(n)) {
+      return null;
+    }
+    if (Math.abs(n - Math.round(n)) < 1e-9) {
+      return Math.round(n).toLocaleString('vi-VN');
+    }
+    return n.toLocaleString('vi-VN', { maximumFractionDigits: 12 });
+  }
+
+  static formatCalResult(value, math) {
+    try {
+      if (value == null) return null;
+      if (value.type === 'Complex') {
+        const re = value.re;
+        const im = value.im;
+        if (Math.abs(im) < 1e-12) {
+          return Utils.formatNumberDisplay(Number(re));
+        }
+        const a = Utils.formatNumberDisplay(Number(re));
+        const b = Utils.formatNumberDisplay(Number(im));
+        if (a == null || b == null) return null;
+        return `${a} + ${b}i`;
+      }
+      if (value.type === 'Matrix' || Array.isArray(value)) {
+        return null;
+      }
+      const n = typeof value === 'number' ? value : Number(math.number(value));
+      return Utils.formatNumberDisplay(n);
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  /** @returns {{ ok: true, text: string } | { ok: false }} */
+  static tryEvaluateCal(raw) {
+    try {
+      if (!Utils.isCalCandidate(raw)) return { ok: false };
+      if (Utils.isTransactionMessage(raw)) return { ok: false };
+      const math = Utils.getMathCal();
+      const expr = Utils.preprocessCalExpression(raw);
+      const result = math.evaluate(expr);
+      const text = Utils.formatCalResult(result, math);
+      if (text == null) return { ok: false };
+      return { ok: true, text };
+    } catch (_e) {
+      return { ok: false };
+    }
+  }
+
+  /**
+   * Chia text thành các phần ≤ maxLen (mặc định 4000, an toàn dưới giới hạn 4096 của Telegram).
+   * Ưu tiên cắt tại xuống dòng gần cuối cửa sổ.
+   * @param {string} text
+   * @param {number} [maxLen=4000]
+   * @returns {string[]}
+   */
+  static splitTelegramMessageChunks(text, maxLen = 4000) {
+    const s = text == null ? '' : String(text);
+    if (s.length === 0) {
+      return [''];
+    }
+    if (s.length <= maxLen) {
+      return [s];
+    }
+    const chunks = [];
+    let i = 0;
+    while (i < s.length) {
+      let end = Math.min(i + maxLen, s.length);
+      if (end < s.length) {
+        const slice = s.slice(i, end);
+        const nl = slice.lastIndexOf('\n');
+        if (nl > 0 && nl >= Math.floor(maxLen * 0.35)) {
+          end = i + nl + 1;
+        }
+      }
+      chunks.push(s.slice(i, end));
+      i = end;
+      while (i < s.length && /\s/.test(s[i])) {
+        i += 1;
+      }
+    }
+    return chunks;
+  }
 }
 
 module.exports = Utils; 

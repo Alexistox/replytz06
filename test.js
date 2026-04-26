@@ -123,7 +123,7 @@ const commandTests = [
   { input: '/1 off', expected: { command: '/1', args: ['off'] } },
   { input: '/1', expected: { command: '/1', args: [] } },
   { input: '/status', expected: { command: '/status', args: [] } },
-  { input: '/help', expected: { command: '/help', args: [] } },
+  { input: '/help2', expected: { command: '/help2', args: [] } },
   { input: 'Không phải command', expected: null },
 ];
 

@@ -23,13 +23,14 @@
     "docker:down": "docker compose down"
   },
   "dependencies": {
-    "telegram": "^2.22.2",
     "fs": "^0.0.1-security",
-    "path": "^0.12.7"
+    "mathjs": "^14.9.1",
+    "path": "^0.12.7",
+    "telegram": "^2.22.2"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
   },
   "author": "",
   "license": "ISC"
-} 
+}
