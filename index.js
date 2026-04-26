@@ -1020,7 +1020,7 @@ class BankTransactionUserbot {
 Telegram menu đôi khi gửi \`/cal@TenBot on\` — bot tự bỏ phần \`@...\`.
 /calon — tương đương \`/cal on\` (gõ dính chữ; mọi người tính được)
 /caloff — tương đương \`/cal off\`
-Hậu tố sau số: \`k\` hoặc \`n\` = nghìn, \`tr\` = triệu, \`tỷ\`/\`ty\` = tỷ. Ví dụ: \`5tr+10k\`, \`sqrt(16)+2*3\`
+Hậu tố: \`k\`/\`n\` = nghìn; \`tr\` / \`m\` = triệu; \`tỷ\` / \`ty\` / \`b\` = tỷ; \`t\` dính số = tỷ (vd: \`1t5\`). Dính tối giản: \`1tr50\` = 1,5tr; \`1tr50k\` = 1tr + 50k; tương tự với m / b / t. Ví dụ: \`5tr+10k\`, \`sqrt(16)+2*3\`
 Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 
 **Commands - Pic2 (auto reply khi gửi ảnh, 👑 admin):**

@@ -807,7 +807,8 @@ class Utils {
     if (/^\d{4}-\d{1,2}-\d{1,2}\b/.test(line)) return false;
     if (/\b\d{4}-\d{2}-\d{2}\b/.test(line)) return false;
     return (
-      /\d\s*(tr|k|n|tỷ|ty)\b/iu.test(line) ||
+      /\d\s*(tr|m|b|k|n|tỷ|ty)\b/iu.test(line) ||
+      /(\d+)(tr|m|b|tỷ|ty|t)\d/iu.test(line) ||
       /[+*^/]/.test(line) ||
       /sqrt|sin|cos|tan|log|exp|abs|pow|floor|ceil|round|mod|\bpi\b|\be\b/i.test(line) ||
       /\(/.test(line) ||
@@ -815,12 +816,44 @@ class Utils {
     );
   }
 
-  /** k,n = nghìn; tr = triệu; tỷ, ty = tỷ (sau số) */
+  /**
+   * k,n = nghìn; tr, m = triệu; tỷ, ty, b, t = tỷ
+   * Dính: XtrY = (X + Y/10^len(Y)) * 1e6; XtrYk = X*1e6 + Y*1e3 (tỷ: *1e9)
+   * Trước: form có ...k/...n sau phần dính, sau đó form thập phân, cuối cùng cách tách cũ
+   */
   static preprocessCalExpression(s) {
     let t = s.trim().split('\n')[0].trim();
     if (!t) return t;
-    t = t.replace(/(\d+(?:\.\d+)?)\s*(tỷ|ty)\b/gu, '($1*1e9)');
+
+    const billyU = (u) => {
+      const x = (u + '').toLowerCase();
+      return x === 't' || x === 'tỷ' || x === 'ty' || x === 'b';
+    };
+
+    // 1) 1tr50k, 1b30k, 1m50k: cơ sở lớn + nghìn; t = tỷ dính (1t30)
+    t = t.replace(
+      /(\d+)(tr|m|tỷ|ty|b|t)([0-9]+)([kn])\b/giu,
+      (match, a, u, c) => {
+        const base = billyU(u) ? 1e9 : 1e6;
+        return '(' + (parseInt(a, 10) * base + parseInt(c, 10) * 1e3) + ')';
+      }
+    );
+
+    // 2) 1tr50, 1b30: (X + Y/10^lenY) * base; không cho k/n ngay sau (đã ở bước 1)
+    t = t.replace(
+      /(\d+)(tr|m|tỷ|ty|b|t)([0-9]+)(?![0-9]|[kKnN])/giu,
+      (match, a, u, c) => {
+        const base = billyU(u) ? 1e9 : 1e6;
+        return '(' + (parseInt(a, 10) + parseInt(c, 10) / 10 ** c.length) * base + ')';
+      }
+    );
+
+    t = t.replace(
+      /(\d+(?:\.\d+)?)\s*(tỷ|ty|b)(?![a-z0-9_])/giu,
+      '($1*1e9)'
+    );
     t = t.replace(/(\d+(?:\.\d+)?)\s*tr\b/giu, '($1*1e6)');
+    t = t.replace(/(\d+(?:\.\d+)?)\s*m(?![a-z0-9_])\b/iu, '($1*1e6)');
     t = t.replace(/(\d+(?:\.\d+)?)\s*[kn]\b/giu, '($1*1e3)');
     return t;
   }
