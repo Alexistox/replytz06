@@ -54,15 +54,52 @@ class Utils {
     return vnOk || cnOk;
   }
 
-  // Parse command từ tin nhắn
+  // Parse command từ tin nhắn (bỏ @BotUsername sau lệnh — Telegram hay gửi /cal@bot on)
   static parseCommand(messageText) {
     if (!messageText || !messageText.startsWith('/')) return null;
 
-    const parts = messageText.trim().split(' ');
+    const parts = messageText.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return null;
+
+    let command = parts[0].toLowerCase();
+    const at = command.indexOf('@');
+    if (at !== -1) {
+      command = command.slice(0, at);
+    }
+
     return {
-      command: parts[0].toLowerCase(),
-      args: parts.slice(1)
+      command,
+      args: parts.slice(1),
     };
+  }
+
+  /** Lấy user ID người gửi (chuỗi) từ tin GramJS — ổn định hơn senderId?.toString() khi senderId là object/Long */
+  static getMessageSenderUserId(message) {
+    if (!message) return '';
+    const sid = message.senderId;
+    if (sid == null) return '';
+    if (typeof sid === 'bigint') return sid.toString();
+    if (typeof sid === 'number') return String(sid);
+    if (typeof sid === 'string') return sid.trim();
+    if (typeof sid === 'object') {
+      if (sid.userId != null) {
+        return Utils.getMessageSenderUserId({ senderId: sid.userId });
+      }
+      if (typeof sid.valueOf === 'function') {
+        try {
+          const v = sid.valueOf();
+          if (v !== sid) return Utils.getMessageSenderUserId({ senderId: v });
+        } catch (_e) {
+          /* ignore */
+        }
+      }
+    }
+    try {
+      const t = String(sid).trim();
+      return t && !t.startsWith('[object ') ? t : '';
+    } catch (_e) {
+      return '';
+    }
   }
 
   // Log với timestamp

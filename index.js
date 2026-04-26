@@ -645,13 +645,38 @@ class BankTransactionUserbot {
         break;
       
       case '/help2':
-        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '');
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
           return;
         }
         await this.handleHelp2Command(chatId, messageId);
         break;
-      
+
+      // /help 2 (có khoảng trắng) — tương đương /help2
+      case '/help':
+        if (args[0] === '2' || (args.length === 1 && String(args[0]).trim() === '2')) {
+          if (!this.isOwnerOrAdmin(originalMessage)) {
+            await this.sendReply(
+              chatId,
+              messageId,
+              '❌ Chỉ admin mới có thể sử dụng lệnh này'
+            );
+            return;
+          }
+          await this.handleHelp2Command(chatId, messageId);
+        } else {
+          await this.sendReply(
+            chatId,
+            messageId,
+            'ℹ️ Hướng dẫn đầy đủ (admin): gõ **/help2** hoặc **/help 2**'
+          );
+        }
+        break;
+
       case '/id':
         await this.handleIdCommand(chatId, messageId, originalMessage);
         break;
@@ -753,11 +778,40 @@ class BankTransactionUserbot {
         break;
 
       case '/cal':
-        if (!this.isOwnerOrAdmin(originalMessage.senderId?.toString())) {
-          await this.sendReply(chatId, messageId, '');
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
           return;
         }
         await this.handleCalCommand(args, chatId, messageId);
+        break;
+
+      // Một số client/ghi nhớ lệnh dính chữ: /calon ≈ /cal on
+      case '/calon':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleCalCommand(['on'], chatId, messageId);
+        break;
+
+      case '/caloff':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleCalCommand(['off'], chatId, messageId);
         break;
     }
   }
@@ -828,7 +882,11 @@ class BankTransactionUserbot {
       Utils.log('🔴 /cal TẮT (toàn bot)');
       await this.sendReply(chatId, messageId, '❌ Đã TẮT máy tính **toàn bot** (mọi nhóm)');
     } else {
-      await this.sendReply(chatId, messageId, '');
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Dùng: /cal on hoặc /cal off (hoặc /cal để xem trạng thái)'
+      );
     }
   }
 
@@ -899,7 +957,7 @@ class BankTransactionUserbot {
 /listforward2 - Xem global forward rules 👑
 /copyall - Copy lịch sử vào nhóm này 👑
 /newcopy - Copy tin mới (sau /copyall) 👑
-/help2 - Hướng dẫn đầy đủ (admin) 👑
+/help2 hoặc /help 2 - Hướng dẫn đầy đủ (admin) 👑
 
 👑 = Admin only commands
     `.trim();
@@ -935,6 +993,9 @@ class BankTransactionUserbot {
 /cal on - Bật: **mọi nhóm/kênh** đều tính được; bot trả **chỉ kết quả** (quote tin gốc)
 /cal off - Tắt máy tính trên toàn bot
 /cal - Xem trạng thái /cal
+Telegram menu đôi khi gửi \`/cal@TenBot on\` — bot tự bỏ phần \`@...\`.
+/calon — tương đương \`/cal on\` (gõ dính chữ)
+/caloff — tương đương \`/cal off\`
 Hậu tố sau số: \`k\` hoặc \`n\` = nghìn, \`tr\` = triệu, \`tỷ\`/\`ty\` = tỷ. Ví dụ: \`5tr+10k\`, \`sqrt(16)+2*3\`
 Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 
@@ -1008,7 +1069,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /pic2 - Hướng dẫn Pic2 (admin, xem thêm mục Pic2 phía trên)
 /copyall - Copy lịch sử từ nguồn vào nhóm này (admin)
 /newcopy - Copy tin mới sau watermark (admin)
-/help2 - Hiển thị hướng dẫn này (admin)
+/help2 hoặc /help 2 - Hiển thị hướng dẫn này (admin)
 
 ⚠️ **Lưu ý chung:** 
 - Bot chỉ reply tin nhắn có đầy đủ thông tin giao dịch (chế độ /1)
@@ -1952,24 +2013,30 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
   }
 
-  // Check if user is owner or admin
+  // Check if user is owner or admin (userId: chuỗi ID hoặc object tin nhắn có senderId)
   isOwnerOrAdmin(userId) {
-    if (!userId) return false;
-    
+    let uid = '';
+    if (userId != null && typeof userId === 'object' && 'senderId' in userId) {
+      uid = Utils.getMessageSenderUserId(userId);
+    } else if (userId !== undefined && userId !== null) {
+      uid = String(userId).trim();
+    }
+    if (!uid) return false;
+
     // Check admin list
-    if (Utils.isAdmin(this.settings, userId)) {
+    if (Utils.isAdmin(this.settings, uid)) {
       return true;
     }
     
     // First-time setup: if no admins exist, anyone can become admin
     const adminList = Utils.getAdminList(this.settings);
     if (adminList.length === 0) {
-      Utils.log(`🏃‍♂️ First-time setup: Auto-adding first admin: ${userId}`);
-      Utils.addAdmin(this.settings, userId);
+      Utils.log(`🏃‍♂️ First-time setup: Auto-adding first admin: ${uid}`);
+      Utils.addAdmin(this.settings, uid);
       Utils.saveSettings(this.settings);
       return true;
     }
-    
+
     return false;
   }
 
