@@ -1059,7 +1059,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 **Commands - Copy hàng loạt (👑 admin, gõ trong nhóm/kênh đích):**
 /copyall [thời gian] [id nguồn] — Copy lịch sử từ nhóm/kênh nguồn vào **chat đang gõ lệnh**. Thời gian: \`24h\`, \`7d\`, \`2w\` hoặc ngày \`YYYY-MM-DD\` (UTC 00:00). Một tham số là ID (số), một tham số là mốc thời gian (thứ tự tùy ý).
 /newcopy [id nguồn] — Copy các tin **mới hơn** watermark lần copy gần nhất (sau khi đã chạy /copyall ít nhất một lần cho cặp nguồn + đích này).
-/copylink [link t.me] — Lấy **1 tin** (video / album / ảnh…) từ link Telegram và gửi vào **chat đang gõ**. Ưu tiên **copy nhanh** như cũ; chỉ **re-upload** khi lỗi (vd. nguồn bật **restrict saving content**). Bot phải đã join / xem được chat nguồn. Ví dụ: \`/copylink https://t.me/c/1234567890/42\` hoặc \`/copylink https://t.me/channel/42\`
+/copylink [link t.me] — Lấy **1 tin hoặc cả album** (ảnh/video + **caption**) từ link Telegram vào **chat đang gõ**. Ưu tiên **copy nhanh**; chỉ **re-upload** khi lỗi (vd. **restrict saving content**). Bot phải xem được chat nguồn. Ví dụ: \`/copylink https://t.me/c/1234567890/42\`
 
 **Giới hạn & lưu ý:** số tin tối đa mỗi lần quét/gửi cấu hình trong \`config.js\` (\`copyAllMaxCollect\`, \`copyAllMaxCopy\`) hoặc env \`COPYALL_MAX_COLLECT\` / \`COPYALL_MAX_COPY\`; mặc định 5000 / 3000. Có delay chống flood — tăng quá cao dễ FLOOD_WAIT. Một số loại (poll, v.v.) có thể chỉ forward. Album rất lớn có thể không gom đủ. Hết cap thì dùng /newcopy, không chạy lại /copyall cùng mốc.
 
@@ -2274,33 +2274,68 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
   // Lấy tất cả messages trong media group (album)
   async getMediaGroupMessages(chatId, groupedId, aroundMessageId) {
     try {
-      // Check if groupedId is valid
       if (groupedId === undefined || groupedId === null) {
         Utils.log(`⚠️ Bỏ qua gom album: groupedId rỗng (${groupedId})`);
         return [];
       }
 
-      // Lấy một range messages xung quanh message hiện tại để tìm tất cả messages cùng groupedId
-      const messages = await this.client.getMessages(chatId, {
-        limit: 20, // Lấy 20 messages xung quanh
-        offsetId: aroundMessageId,
-        addOffset: -10 // Lấy 10 tin nhắn trước và sau
-      });
+      const aroundId = Number(aroundMessageId);
+      if (!aroundId || aroundId < 1) {
+        return [];
+      }
 
-      // Filter những messages có cùng groupedId  
-      const groupMessages = messages.filter(msg => 
-        msg.groupedId && groupedId && msg.groupedId.toString() === groupedId.toString()
+      // Lấy theo id quanh tin hiện tại (ổn định hơn offsetId) — album Telegram thường id liên tiếp
+      const ids = [];
+      for (let i = aroundId - 15; i <= aroundId + 15; i++) {
+        if (i > 0) ids.push(i);
+      }
+
+      let messages = await this.client.getMessages(chatId, { ids });
+      if (!Array.isArray(messages)) {
+        messages = messages ? [messages] : [];
+      }
+      messages = messages.filter((m) => m && m.id);
+
+      let groupMessages = messages.filter(
+        (msg) =>
+          msg.groupedId != null &&
+          msg.groupedId.toString() === groupedId.toString()
       );
 
-      // Sắp xếp theo thứ tự id tăng dần (chronological order)
+      // Fallback: cửa sổ offset nếu chưa đủ
+      if (groupMessages.length <= 1) {
+        try {
+          const around = await this.client.getMessages(chatId, {
+            limit: 40,
+            offsetId: aroundId + 1,
+            addOffset: -20,
+          });
+          const pool = Array.isArray(around) ? around : [];
+          const byId = new Map(groupMessages.map((m) => [m.id, m]));
+          for (const msg of pool) {
+            if (
+              msg &&
+              msg.groupedId != null &&
+              msg.groupedId.toString() === groupedId.toString()
+            ) {
+              byId.set(msg.id, msg);
+            }
+          }
+          groupMessages = Array.from(byId.values());
+        } catch (e) {
+          Utils.log(`⚠️ Album fallback offset: ${e.message}`);
+        }
+      }
+
       groupMessages.sort((a, b) => a.id - b.id);
 
-      Utils.log(`📸 Found ${groupMessages.length} messages in media group ${groupedId}`);
+      Utils.log(
+        `📸 Found ${groupMessages.length} messages in media group ${groupedId}`
+      );
       return groupMessages;
-
     } catch (error) {
       Utils.log(`❌ Error getting media group messages: ${error.message}`);
-      return []; // Return empty array on error
+      return [];
     }
   }
 
@@ -2820,8 +2855,12 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         text: `📋 Đang copy (${Utils.getMessageType(originalMessageSrc)})…`,
       });
 
-      // Nhanh: copyMessage trước; chỉ re-upload khi lỗi (restrict / forward fail…)
-      let result = await this.copyMessage(originalMessageSrc, chatId);
+      // Nhanh: copyMessage trước (album + caption); chỉ re-upload khi lỗi
+      let result = await this.copyMessage(
+        originalMessageSrc,
+        chatId,
+        sourcePeer
+      );
       if (!result || !result.success) {
         Utils.log(
           `⚠️ copylink copyMessage thất bại, thử reupload: ${result?.error || ''}`
@@ -3023,8 +3062,9 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
   }
 
-  // Copy tin nhạn đa dạng
-  async copyMessage(originalMessage, destChatId) {
+  // Copy tin nhắn đa dạng (caption + album đầy đủ nếu có groupedId)
+  // sourcePeer: peer nguồn (khuyến nghị cho /copylink) để gom album chính xác
+  async copyMessage(originalMessage, destChatId, sourcePeer = null) {
     try {
       const rawText = originalMessage.message || originalMessage.text || '';
 
@@ -3034,155 +3074,195 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       }
 
       const messageText = Utils.sanitizeCopyText(rawText);
+      const sourceChat =
+        sourcePeer ||
+        originalMessage.chatId ||
+        originalMessage.peerId;
 
       // ========== HANDLE MEDIA GROUPS (ALBUMS) ==========
       if (Utils.isMediaGroup(originalMessage)) {
         Utils.log(`📸 Detecting media group (album), getting all messages...`);
-        
-        // Lấy tất cả messages trong media group
+
         const groupMessages = await this.getMediaGroupMessages(
-          originalMessage.chatId, 
-          originalMessage.groupedId, 
+          sourceChat,
+          originalMessage.groupedId,
           originalMessage.id
         );
-        
-        if (groupMessages.length > 1) {
-          Utils.log(`📋 Copying album with ${groupMessages.length} items`);
-          
-          // Tạo array media files để send as album
+
+        // Đảm bảo tin đang copy nằm trong list (kể cả khi gom thiếu)
+        const byId = new Map();
+        for (const m of groupMessages) {
+          if (m && m.id) byId.set(m.id, m);
+        }
+        byId.set(originalMessage.id, originalMessage);
+        const albumMsgs = Array.from(byId.values()).sort((a, b) => a.id - b.id);
+
+        if (albumMsgs.length >= 1) {
+          Utils.log(`📋 Copying album with ${albumMsgs.length} items`);
+
           const mediaFiles = [];
           let albumCaption = '';
-          
-          for (const msg of groupMessages) {
+
+          for (const msg of albumMsgs) {
             const msgText = msg.message || msg.text || '';
             if (msgText && !albumCaption) {
-              albumCaption = msgText; // Lấy caption từ tin nhắn đầu tiên có text
+              albumCaption = msgText;
             }
-            
-            // Collect media files
+
             if (msg.media) {
               if (msg.media.className === 'MessageMediaPhoto') {
                 mediaFiles.push({
                   file: msg.media.photo,
-                  type: 'photo'
+                  type: 'photo',
                 });
               } else if (msg.media.className === 'MessageMediaDocument') {
                 mediaFiles.push({
                   file: msg.media.document,
-                  type: 'document'
+                  type: 'document',
                 });
               }
             }
           }
 
+          // Caption có thể nằm ở item khác trong album; nếu chưa có thì lấy từ tin gốc
+          if (!albumCaption) {
+            albumCaption = rawText || '';
+          }
           albumCaption = Utils.sanitizeCopyText(albumCaption);
-          
-          if (mediaFiles.length > 0) {
+
+          if (mediaFiles.length > 1) {
             try {
-              // Method 1: Send as true album using array of files
-              const albumFiles = mediaFiles.map(media => media.file);
-              
+              const albumFiles = mediaFiles.map((media) => media.file);
+
               await this.client.sendMessage(destChatId, {
-                file: albumFiles, // Send array of files - creates true album
-                message: albumCaption || '' // Album caption
+                file: albumFiles,
+                message: albumCaption || '',
               });
-              
-              Utils.log(`✅ Successfully sent album with ${mediaFiles.length} items as true album`);
+
+              Utils.log(
+                `✅ Successfully sent album with ${mediaFiles.length} items as true album`
+              );
               return { success: true, albumSize: mediaFiles.length };
-              
             } catch (albumError) {
-              Utils.log(`❌ True album send failed, trying forwardMessages method: ${albumError.message}`);
-              
+              Utils.log(
+                `❌ True album send failed, trying forwardMessages method: ${albumError.message}`
+              );
+
               try {
                 if (Utils.shouldSkipForwardDueToCopyPolicy(originalMessage)) {
-                  Utils.log('⏭️ Bỏ qua forward album: caption gốc là QC/cờ bạc');
-                  return { success: true, skippedPolicy: true, albumSize: groupMessages.length };
+                  Utils.log(
+                    '⏭️ Bỏ qua forward album: caption gốc là QC/cờ bạc'
+                  );
+                  return {
+                    success: true,
+                    skippedPolicy: true,
+                    albumSize: albumMsgs.length,
+                  };
                 }
-                // Method 2: Forward entire album as a group (preserves album structure)
-                const messageIds = groupMessages.map(msg => msg.id);
-                
+                const messageIds = albumMsgs.map((msg) => msg.id);
+
                 await this.client.forwardMessages(destChatId, {
                   messages: messageIds,
-                  fromPeer: originalMessage.chatId
+                  fromPeer: sourceChat,
                 });
-                
-                Utils.log(`✅ Successfully forwarded album with ${messageIds.length} items as true album`);
-                return { success: true, albumSize: messageIds.length, method: 'forward' };
-                
+
+                Utils.log(
+                  `✅ Successfully forwarded album with ${messageIds.length} items as true album`
+                );
+                return {
+                  success: true,
+                  albumSize: messageIds.length,
+                  method: 'forward',
+                };
               } catch (forwardError) {
-                Utils.log(`❌ forwardMessages failed, trying sendFile method: ${forwardError.message}`);
-                
+                Utils.log(
+                  `❌ forwardMessages failed, trying sendFile method: ${forwardError.message}`
+                );
+
                 try {
-                  // Method 3: Use sendFile with multiple files
-                  await this.client.sendFile(destChatId, albumFiles, {
+                  const albumFiles = mediaFiles.map((media) => media.file);
+                  await this.client.sendFile(destChatId, {
+                    file: albumFiles,
                     caption: albumCaption || '',
-                    forceDocument: false
+                    forceDocument: false,
                   });
-                  
+
                   Utils.log(`✅ Successfully sent album using sendFile method`);
-                  return { success: true, albumSize: mediaFiles.length, method: 'sendFile' };
-                  
+                  return {
+                    success: true,
+                    albumSize: mediaFiles.length,
+                    method: 'sendFile',
+                  };
                 } catch (sendFileError) {
-                  Utils.log(`❌ sendFile failed, falling back to individual messages: ${sendFileError.message}`);
-                  
-                  // Method 4: Fallback to individual files with same timestamp to group them
-                const timestamp = Date.now();
-                
-                for (let i = 0; i < mediaFiles.length; i++) {
-                  const media = mediaFiles[i];
-                  const isFirst = i === 0;
-                  
-                  await this.client.sendMessage(destChatId, {
-                    file: media.file,
-                    message: isFirst ? albumCaption : '', // Only caption on first item
-                    scheduleDate: timestamp // Try to group by same timestamp
-                  });
-                  
-                  // Minimal delay to maintain order
-                  if (i < mediaFiles.length - 1) {
-                    await new Promise(resolve => setTimeout(resolve, 50));
+                  Utils.log(
+                    `❌ sendFile failed, falling back to individual messages: ${sendFileError.message}`
+                  );
+
+                  for (let i = 0; i < mediaFiles.length; i++) {
+                    const media = mediaFiles[i];
+                    const isFirst = i === 0;
+
+                    await this.client.sendMessage(destChatId, {
+                      file: media.file,
+                      message: isFirst ? albumCaption : '',
+                    });
+
+                    if (i < mediaFiles.length - 1) {
+                      await new Promise((resolve) => setTimeout(resolve, 50));
+                    }
                   }
-                }
-                
-                Utils.log(`✅ Album sent as individual files with grouping attempt`);
-                return { success: true, albumSize: mediaFiles.length, fallback: true };
+
+                  Utils.log(`✅ Album sent as individual files`);
+                  return {
+                    success: true,
+                    albumSize: mediaFiles.length,
+                    fallback: true,
+                  };
                 }
               }
             }
           }
+
+          // Album chỉ còn 1 media (hoặc gom thiếu) → gửi kèm caption của album
+          if (mediaFiles.length === 1) {
+            await this.client.sendMessage(destChatId, {
+              file: mediaFiles[0].file,
+              message: albumCaption || messageText || '',
+            });
+            return { success: true, albumSize: 1 };
+          }
         }
-        
-        // Nếu chỉ có 1 message trong group hoặc không có media, xử lý như single message
+
         Utils.log(`📷 Single item in media group, processing as normal message`);
       }
-      
+
       // ========== HANDLE SINGLE MESSAGES ==========
-      
+
       // Copy tin nhắn văn bản
       if (messageText && !originalMessage.media) {
         await this.client.sendMessage(destChatId, { message: messageText });
         return { success: true };
       }
-      
-      // Copy tin nhắn có media
+
+      // Copy tin nhắn có media (+ caption)
       if (originalMessage.media) {
         const mediaType = originalMessage.media.className;
-        
+
         switch (mediaType) {
           case 'MessageMediaPhoto':
             await this.client.sendMessage(destChatId, {
               file: originalMessage.media.photo,
-              message: messageText || ''
+              message: messageText || '',
             });
             break;
-            
+
           case 'MessageMediaDocument':
             await this.client.sendMessage(destChatId, {
               file: originalMessage.media.document,
-              message: messageText || ''
+              message: messageText || '',
             });
             break;
-            
+
           default:
             if (Utils.shouldSkipForwardDueToCopyPolicy(originalMessage)) {
               Utils.log('⏭️ Bỏ qua forward: caption gốc là QC/cờ bạc');
@@ -3190,24 +3270,23 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
             }
             await this.client.forwardMessages(destChatId, {
               messages: [originalMessage.id],
-              fromPeer: originalMessage.chatId
+              fromPeer: sourceChat,
             });
         }
-        
+
         return { success: true };
       }
-      
+
       if (Utils.shouldSkipForwardDueToCopyPolicy(originalMessage)) {
         Utils.log('⏭️ Bỏ qua forward: caption gốc là QC/cờ bạc');
         return { success: true, skippedPolicy: true };
       }
       await this.client.forwardMessages(destChatId, {
         messages: [originalMessage.id],
-        fromPeer: originalMessage.chatId
+        fromPeer: sourceChat,
       });
-      
+
       return { success: true };
-      
     } catch (error) {
       Utils.log(`❌ Copy message error: ${error.message}`);
       return { success: false, error: error.message };
