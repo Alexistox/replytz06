@@ -1059,7 +1059,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 **Commands - Copy hàng loạt (👑 admin, gõ trong nhóm/kênh đích):**
 /copyall [thời gian] [id nguồn] — Copy lịch sử từ nhóm/kênh nguồn vào **chat đang gõ lệnh**. Thời gian: \`24h\`, \`7d\`, \`2w\` hoặc ngày \`YYYY-MM-DD\` (UTC 00:00). Một tham số là ID (số), một tham số là mốc thời gian (thứ tự tùy ý).
 /newcopy [id nguồn] — Copy các tin **mới hơn** watermark lần copy gần nhất (sau khi đã chạy /copyall ít nhất một lần cho cặp nguồn + đích này).
-/copylink [link t.me] — Lấy **1 tin** (video / album / ảnh…) từ link Telegram và gửi vào **chat đang gõ**. Dùng re-upload nên vẫn copy được khi nguồn bật **restrict saving content** (cấm forward). Bot phải đã join / xem được chat nguồn. Ví dụ: \`/copylink https://t.me/c/1234567890/42\` hoặc \`/copylink https://t.me/channel/42\`
+/copylink [link t.me] — Lấy **1 tin** (video / album / ảnh…) từ link Telegram và gửi vào **chat đang gõ**. Ưu tiên **copy nhanh** như cũ; chỉ **re-upload** khi lỗi (vd. nguồn bật **restrict saving content**). Bot phải đã join / xem được chat nguồn. Ví dụ: \`/copylink https://t.me/c/1234567890/42\` hoặc \`/copylink https://t.me/channel/42\`
 
 **Giới hạn & lưu ý:** số tin tối đa mỗi lần quét/gửi cấu hình trong \`config.js\` (\`copyAllMaxCollect\`, \`copyAllMaxCopy\`) hoặc env \`COPYALL_MAX_COLLECT\` / \`COPYALL_MAX_COPY\`; mặc định 5000 / 3000. Có delay chống flood — tăng quá cao dễ FLOOD_WAIT. Một số loại (poll, v.v.) có thể chỉ forward. Album rất lớn có thể không gom đủ. Hết cap thì dùng /newcopy, không chạy lại /copyall cùng mốc.
 
@@ -2740,7 +2740,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
   /**
    * /copylink <link t.me> — copy 1 tin (album/video/ảnh) từ link vào chat hiện tại.
-   * Ưu tiên re-upload media để vượt restrict saving content (noforwards).
+   * Ưu tiên copyMessage (nhanh); chỉ re-upload khi thất bại (vd. restrict content).
    */
   async handleCopyLinkCommand(args, chatId, messageId, originalMessage) {
     const linkRaw =
@@ -2755,7 +2755,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         messageId,
         '❗ Dùng: `/copylink https://t.me/c/1234567890/42`\n' +
           'hoặc `/copylink https://t.me/tenkenh/42`\n' +
-          'Bot phải xem được chat nguồn; gửi lại bằng re-upload (vượt restrict content).'
+          'Bot phải xem được chat nguồn. Copy nhanh trước; nếu bị restrict thì tự re-upload.'
       );
       return;
     }
@@ -2817,16 +2817,24 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
 
       await this.client.editMessage(chatId, {
         message: startMsg.id,
-        text: `📥 Đang tải & gửi (${Utils.getMessageType(originalMessageSrc)})…`,
+        text: `📋 Đang copy (${Utils.getMessageType(originalMessageSrc)})…`,
       });
 
-      // Ưu tiên re-upload (vượt restrict); fallback copyMessage nếu cần
-      let result = await this.reuploadMessage(originalMessageSrc, chatId, sourcePeer);
+      // Nhanh: copyMessage trước; chỉ re-upload khi lỗi (restrict / forward fail…)
+      let result = await this.copyMessage(originalMessageSrc, chatId);
       if (!result || !result.success) {
         Utils.log(
-          `⚠️ copylink reupload thất bại, thử copyMessage: ${result?.error || ''}`
+          `⚠️ copylink copyMessage thất bại, thử reupload: ${result?.error || ''}`
         );
-        result = await this.copyMessage(originalMessageSrc, chatId);
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `📥 Copy thường lỗi — đang tải & gửi lại (re-upload)…`,
+        });
+        result = await this.reuploadMessage(
+          originalMessageSrc,
+          chatId,
+          sourcePeer
+        );
       }
 
       if (result && result.success) {
