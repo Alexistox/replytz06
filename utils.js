@@ -786,6 +786,105 @@ class Utils {
     return { timeArg: timeTokens[0].trim(), sourceId: idTokens[0].trim() };
   }
 
+  /**
+   * Tìm URL tin nhắn Telegram trong args hoặc chuỗi
+   * @returns {string|null}
+   */
+  static extractTelegramMessageLink(textOrArgs) {
+    const text = Array.isArray(textOrArgs)
+      ? textOrArgs.join(' ')
+      : String(textOrArgs || '');
+    if (!text.trim()) return null;
+    const m = text.match(
+      /(?:https?:\/\/)?(?:t\.me|telegram\.me|telegram\.dog)\/[^\s<>"']+/i
+    );
+    return m ? m[0].replace(/[),.;]+$/, '') : null;
+  }
+
+  /**
+   * Parse link tin nhắn Telegram → peer + messageId
+   * Hỗ trợ:
+   * - https://t.me/c/1234567890/42
+   * - https://t.me/c/1234567890/99/42 (forum: topic/msg)
+   * - https://t.me/username/42
+   * - https://t.me/username/42?single
+   * @returns {{ username: string, messageId: number } | { chatId: string, messageId: number } | { error: string }}
+   */
+  static parseTelegramMessageLink(input) {
+    if (!input || typeof input !== 'string') {
+      return { error: 'Thiếu link tin nhắn Telegram' };
+    }
+    let raw = input.trim();
+    const extracted = Utils.extractTelegramMessageLink(raw);
+    if (extracted) raw = extracted;
+
+    raw = raw.replace(/[),.;]+$/, '');
+    if (!/^https?:\/\//i.test(raw)) {
+      raw = `https://${raw}`;
+    }
+
+    let url;
+    try {
+      url = new URL(raw);
+    } catch (_e) {
+      return { error: 'Link không hợp lệ' };
+    }
+
+    const host = (url.hostname || '').toLowerCase();
+    if (!['t.me', 'telegram.me', 'telegram.dog', 'www.t.me'].includes(host)) {
+      return { error: 'Chỉ hỗ trợ link t.me / telegram.me' };
+    }
+
+    const parts = url.pathname.split('/').filter(Boolean);
+    if (parts.length < 2) {
+      return {
+        error:
+          'Link thiếu message id. Ví dụ: https://t.me/c/123/456 hoặc https://t.me/channel/456',
+      };
+    }
+
+    // Private/supergroup: /c/<internalId>/<msgId> hoặc /c/<internalId>/<topicId>/<msgId>
+    if (parts[0].toLowerCase() === 'c') {
+      const internalId = parts[1];
+      if (!/^\d+$/.test(internalId)) {
+        return { error: 'ID kênh/nhóm trong link /c/ không hợp lệ' };
+      }
+      let messageIdStr;
+      if (parts.length >= 4 && /^\d+$/.test(parts[2]) && /^\d+$/.test(parts[3])) {
+        messageIdStr = parts[3];
+      } else if (parts.length >= 3 && /^\d+$/.test(parts[2])) {
+        messageIdStr = parts[2];
+      } else {
+        return { error: 'Không đọc được message id từ link /c/...' };
+      }
+      const messageId = parseInt(messageIdStr, 10);
+      if (!messageId || messageId < 1) {
+        return { error: 'Message id không hợp lệ' };
+      }
+      return {
+        chatId: `-100${internalId}`,
+        messageId,
+      };
+    }
+
+    // Public: /username/<msgId>
+    const username = parts[0];
+    if (
+      !username ||
+      /^(joinchat|addstickers|share|proxy|socks|iv|s)$/i.test(username)
+    ) {
+      return { error: 'Link không phải link tin nhắn' };
+    }
+    if (!/^\d+$/.test(parts[1])) {
+      return { error: 'Message id trong link phải là số' };
+    }
+    const messageId = parseInt(parts[1], 10);
+    if (!messageId || messageId < 1) {
+      return { error: 'Message id không hợp lệ' };
+    }
+    return { username, messageId };
+  }
+
   // ================== CAL (/cal máy tính) ==================
 
   static _mathCalInstance = null;

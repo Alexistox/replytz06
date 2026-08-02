@@ -144,6 +144,51 @@ commandTests.forEach((test, index) => {
   else failCount++;
 });
 
+// Test Telegram message link parsing
+console.log('🔗 Test parseTelegramMessageLink:');
+console.log('=================================\n');
+
+const linkTests = [
+  {
+    input: 'https://t.me/c/1234567890/42',
+    expected: { chatId: '-1001234567890', messageId: 42 },
+  },
+  {
+    input: 'https://t.me/c/1234567890/99/42',
+    expected: { chatId: '-1001234567890', messageId: 42 },
+  },
+  {
+    input: 'https://t.me/myChannel/123?single',
+    expected: { username: 'myChannel', messageId: 123 },
+  },
+  {
+    input: 't.me/c/111/7',
+    expected: { chatId: '-100111', messageId: 7 },
+  },
+  {
+    input: 'https://telegram.me/foo/9',
+    expected: { username: 'foo', messageId: 9 },
+  },
+];
+
+linkTests.forEach((test, index) => {
+  const result = Utils.parseTelegramMessageLink(test.input);
+  const passed = JSON.stringify(result) === JSON.stringify(test.expected);
+  console.log(`Link Test ${index + 1}: "${test.input}"`);
+  console.log(`Expected: ${JSON.stringify(test.expected)}`);
+  console.log(`Got: ${JSON.stringify(result)} - ${passed ? '✅ PASS' : '❌ FAIL'}`);
+  console.log('');
+  if (passed) passCount++;
+  else failCount++;
+});
+
+const extractOk =
+  Utils.extractTelegramMessageLink(['https://t.me/c/1/2']) === 'https://t.me/c/1/2';
+console.log(`extractTelegramMessageLink: ${extractOk ? '✅ PASS' : '❌ FAIL'}`);
+if (extractOk) passCount++;
+else failCount++;
+console.log('');
+
 // Test amount extraction
 console.log('💰 Test Amount Extraction:');
 console.log('==========================\n');

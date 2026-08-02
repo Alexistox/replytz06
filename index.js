@@ -779,6 +779,18 @@ class BankTransactionUserbot {
         await this.handleNewCopyCommand(args, chatId, messageId, originalMessage);
         break;
 
+      case '/copylink':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleCopyLinkCommand(args, chatId, messageId, originalMessage);
+        break;
+
       case '/cal':
         if (!this.isOwnerOrAdmin(originalMessage)) {
           await this.sendReply(
@@ -994,6 +1006,7 @@ class BankTransactionUserbot {
 /listforward2 - Xem global forward rules 👑
 /copyall - Copy lịch sử vào nhóm này 👑
 /newcopy - Copy tin mới (sau /copyall) 👑
+/copylink - Copy album/video từ link t.me vào nhóm này 👑
 /help2 hoặc /help 2 - Hướng dẫn đầy đủ (admin) 👑
 
 👑 = Admin only commands
@@ -1046,6 +1059,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 **Commands - Copy hàng loạt (👑 admin, gõ trong nhóm/kênh đích):**
 /copyall [thời gian] [id nguồn] — Copy lịch sử từ nhóm/kênh nguồn vào **chat đang gõ lệnh**. Thời gian: \`24h\`, \`7d\`, \`2w\` hoặc ngày \`YYYY-MM-DD\` (UTC 00:00). Một tham số là ID (số), một tham số là mốc thời gian (thứ tự tùy ý).
 /newcopy [id nguồn] — Copy các tin **mới hơn** watermark lần copy gần nhất (sau khi đã chạy /copyall ít nhất một lần cho cặp nguồn + đích này).
+/copylink [link t.me] — Lấy **1 tin** (video / album / ảnh…) từ link Telegram và gửi vào **chat đang gõ**. Dùng re-upload nên vẫn copy được khi nguồn bật **restrict saving content** (cấm forward). Bot phải đã join / xem được chat nguồn. Ví dụ: \`/copylink https://t.me/c/1234567890/42\` hoặc \`/copylink https://t.me/channel/42\`
 
 **Giới hạn & lưu ý:** số tin tối đa mỗi lần quét/gửi cấu hình trong \`config.js\` (\`copyAllMaxCollect\`, \`copyAllMaxCopy\`) hoặc env \`COPYALL_MAX_COLLECT\` / \`COPYALL_MAX_COPY\`; mặc định 5000 / 3000. Có delay chống flood — tăng quá cao dễ FLOOD_WAIT. Một số loại (poll, v.v.) có thể chỉ forward. Album rất lớn có thể không gom đủ. Hết cap thì dùng /newcopy, không chạy lại /copyall cùng mốc.
 
@@ -1093,6 +1107,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /pic2 - Hướng dẫn Pic2 (admin, xem thêm mục Pic2 phía trên)
 /copyall - Copy lịch sử từ nguồn vào nhóm này (admin)
 /newcopy - Copy tin mới sau watermark (admin)
+/copylink - Copy album/video từ link t.me (kể cả restrict content) (admin)
 /help2 hoặc /help 2 - Hiển thị hướng dẫn này (admin)
 
 ⚠️ **Lưu ý chung:** 
@@ -2721,6 +2736,283 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         }
       }
     })();
+  }
+
+  /**
+   * /copylink <link t.me> — copy 1 tin (album/video/ảnh) từ link vào chat hiện tại.
+   * Ưu tiên re-upload media để vượt restrict saving content (noforwards).
+   */
+  async handleCopyLinkCommand(args, chatId, messageId, originalMessage) {
+    const linkRaw =
+      Utils.extractTelegramMessageLink(args) ||
+      Utils.extractTelegramMessageLink(
+        originalMessage?.message || originalMessage?.text || ''
+      );
+
+    if (!linkRaw) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Dùng: `/copylink https://t.me/c/1234567890/42`\n' +
+          'hoặc `/copylink https://t.me/tenkenh/42`\n' +
+          'Bot phải xem được chat nguồn; gửi lại bằng re-upload (vượt restrict content).'
+      );
+      return;
+    }
+
+    const parsed = Utils.parseTelegramMessageLink(linkRaw);
+    if (parsed.error) {
+      await this.sendReply(chatId, messageId, `❌ ${parsed.error}`);
+      return;
+    }
+
+    const startMsg = await this.client.sendMessage(chatId, {
+      message: `🔗 Đang lấy tin từ link…`,
+      replyTo: messageId,
+    });
+
+    try {
+      let sourcePeer;
+      if (parsed.username) {
+        sourcePeer = await this.client.getEntity(parsed.username);
+      } else {
+        sourcePeer = await this.client.getEntity(parsed.chatId);
+      }
+
+      const fetched = await this.invokeFloodSafe(
+        () =>
+          this.client.getMessages(sourcePeer, {
+            ids: [parsed.messageId],
+          }),
+        'getMessages copylink'
+      );
+
+      const originalMessageSrc = Array.isArray(fetched)
+        ? fetched[0]
+        : fetched;
+      if (!originalMessageSrc || !originalMessageSrc.id) {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ Không tìm thấy tin \`${parsed.messageId}\` — bot có trong nguồn và link đúng chưa?`,
+        });
+        return;
+      }
+
+      // Gắn chatId rõ ràng để gom album
+      if (originalMessageSrc.chatId == null) {
+        try {
+          originalMessageSrc.chatId = sourcePeer.id ?? parsed.chatId;
+        } catch (_e) {
+          /* ignore */
+        }
+      }
+
+      if (!Utils.canCopyMessage(originalMessageSrc)) {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ Loại tin này không hỗ trợ copy (${Utils.getMessageType(originalMessageSrc)})`,
+        });
+        return;
+      }
+
+      await this.client.editMessage(chatId, {
+        message: startMsg.id,
+        text: `📥 Đang tải & gửi (${Utils.getMessageType(originalMessageSrc)})…`,
+      });
+
+      // Ưu tiên re-upload (vượt restrict); fallback copyMessage nếu cần
+      let result = await this.reuploadMessage(originalMessageSrc, chatId, sourcePeer);
+      if (!result || !result.success) {
+        Utils.log(
+          `⚠️ copylink reupload thất bại, thử copyMessage: ${result?.error || ''}`
+        );
+        result = await this.copyMessage(originalMessageSrc, chatId);
+      }
+
+      if (result && result.success) {
+        if (result.skippedPolicy) {
+          await this.client.editMessage(chatId, {
+            message: startMsg.id,
+            text: `⏭️ Đã bỏ qua (lọc QC/cờ bạc)`,
+          });
+          return;
+        }
+        const extra =
+          result.albumSize != null ? ` · album ${result.albumSize} ảnh/video` : '';
+        const method = result.method ? ` · ${result.method}` : '';
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `✅ Đã copy vào nhóm này${extra}${method}`,
+        });
+        Utils.log(
+          `✅ /copylink msg ${parsed.messageId} → ${chatId}${extra}${method}`
+        );
+      } else {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ Copy thất bại: ${result?.error || 'unknown'}`,
+        });
+      }
+    } catch (e) {
+      Utils.log(`❌ copylink: ${e.message}`);
+      try {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ Lỗi: ${e.message}`,
+        });
+      } catch (e2) {
+        await this.sendReply(chatId, messageId, `❌ Lỗi: ${e.message}`);
+      }
+    }
+  }
+
+  /**
+   * Tải media rồi gửi lại (re-upload) — vượt restrict saving content / noforwards.
+   * sourcePeer: peer nguồn để getMessages album nếu chatId trên msg thiếu.
+   */
+  async reuploadMessage(originalMessage, destChatId, sourcePeer = null) {
+    const { CustomFile } = require('telegram/client/uploads');
+    try {
+      if (Utils.shouldSkipTextOnlyCopyDueToPolicy(originalMessage)) {
+        return { success: true, skippedPolicy: true, method: 'reupload' };
+      }
+
+      const sourceChat =
+        sourcePeer ||
+        originalMessage.chatId ||
+        originalMessage.peerId;
+
+      const guessExt = (msg) => {
+        try {
+          const doc = msg.media && msg.media.document;
+          if (doc && doc.mimeType) {
+            if (doc.mimeType.includes('video')) return 'mp4';
+            if (doc.mimeType.includes('gif')) return 'gif';
+            if (doc.mimeType.includes('webp')) return 'webp';
+            if (doc.mimeType.includes('png')) return 'png';
+            if (doc.mimeType.includes('jpeg') || doc.mimeType.includes('jpg'))
+              return 'jpg';
+            if (doc.mimeType.includes('audio')) return 'mp3';
+          }
+          if (msg.media && msg.media.className === 'MessageMediaPhoto') return 'jpg';
+        } catch (_e) {
+          /* ignore */
+        }
+        return 'bin';
+      };
+
+      const extractFileName = (msg, fallbackExt) => {
+        try {
+          const doc = msg.media && msg.media.document;
+          if (doc && doc.attributes) {
+            for (const attr of doc.attributes) {
+              if (attr.fileName) return attr.fileName;
+              if (
+                attr.className === 'DocumentAttributeFilename' &&
+                attr.fileName
+              ) {
+                return attr.fileName;
+              }
+            }
+          }
+        } catch (_e) {
+          /* ignore */
+        }
+        return `media_${msg.id}.${fallbackExt || guessExt(msg)}`;
+      };
+
+      const toUploadFile = (buf, name) => {
+        if (!buf) return null;
+        if (Buffer.isBuffer(buf)) {
+          return new CustomFile(name, buf.length, '', buf);
+        }
+        // downloadMedia đôi khi trả CustomFile / path
+        return buf;
+      };
+
+      // Album
+      if (Utils.isMediaGroup(originalMessage)) {
+        const groupMessages = await this.getMediaGroupMessages(
+          sourceChat,
+          originalMessage.groupedId,
+          originalMessage.id
+        );
+        const msgs =
+          groupMessages.length > 0 ? groupMessages : [originalMessage];
+
+        const files = [];
+        let albumCaption = '';
+        for (const msg of msgs) {
+          const msgText = msg.message || msg.text || '';
+          if (msgText && !albumCaption) albumCaption = msgText;
+          if (!msg.media) continue;
+          const buf = await this.invokeFloodSafe(
+            () => this.client.downloadMedia(msg, {}),
+            'downloadMedia album'
+          );
+          const name = extractFileName(msg);
+          const file = toUploadFile(buf, name);
+          if (file) files.push(file);
+        }
+
+        albumCaption = Utils.sanitizeCopyText(albumCaption || '');
+        if (files.length === 0) {
+          return { success: false, error: 'Không tải được media album' };
+        }
+
+        await this.invokeFloodSafe(
+          () =>
+            this.client.sendFile(destChatId, {
+              file: files,
+              caption: albumCaption || '',
+            }),
+          'sendFile album reupload'
+        );
+        return {
+          success: true,
+          albumSize: files.length,
+          method: 'reupload',
+        };
+      }
+
+      const rawText = originalMessage.message || originalMessage.text || '';
+      const messageText = Utils.sanitizeCopyText(rawText);
+
+      // Text only
+      if (messageText && !originalMessage.media) {
+        await this.client.sendMessage(destChatId, { message: messageText });
+        return { success: true, method: 'reupload' };
+      }
+
+      if (!originalMessage.media) {
+        return { success: false, error: 'Tin không có media để re-upload' };
+      }
+
+      const buf = await this.invokeFloodSafe(
+        () => this.client.downloadMedia(originalMessage, {}),
+        'downloadMedia single'
+      );
+      if (!buf) {
+        return { success: false, error: 'downloadMedia trả về rỗng' };
+      }
+
+      const fileName = extractFileName(originalMessage);
+      const file = toUploadFile(buf, fileName);
+
+      await this.invokeFloodSafe(
+        () =>
+          this.client.sendFile(destChatId, {
+            file,
+            caption: messageText || '',
+            supportsStreaming: true,
+          }),
+        'sendFile reupload'
+      );
+      return { success: true, method: 'reupload' };
+    } catch (error) {
+      Utils.log(`❌ reuploadMessage: ${error.message}`);
+      return { success: false, error: error.message };
+    }
   }
 
   // Copy tin nhạn đa dạng
