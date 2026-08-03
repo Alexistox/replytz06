@@ -189,6 +189,64 @@ if (extractOk) passCount++;
 else failCount++;
 console.log('');
 
+// Test story link + peer match
+console.log('📖 Test story link & peer match:');
+console.log('================================\n');
+
+const storyTests = [
+  {
+    input: 'https://t.me/durov/s/12',
+    expected: { username: 'durov', storyId: 12 },
+  },
+  {
+    input: 't.me/SomeUser/s/3',
+    expected: { username: 'SomeUser', storyId: 3 },
+  },
+];
+
+storyTests.forEach((test, index) => {
+  const isStory = Utils.isTelegramStoryLink(test.input);
+  const result = Utils.parseTelegramStoryLink(test.input);
+  const passed =
+    isStory && JSON.stringify(result) === JSON.stringify(test.expected);
+  console.log(`Story Test ${index + 1}: "${test.input}"`);
+  console.log(`Expected: ${JSON.stringify(test.expected)}`);
+  console.log(`Got: ${JSON.stringify(result)} isStory=${isStory} - ${passed ? '✅ PASS' : '❌ FAIL'}`);
+  console.log('');
+  if (passed) passCount++;
+  else failCount++;
+});
+
+const notStory = !Utils.isTelegramStoryLink('https://t.me/durov/12');
+console.log(`not story post link: ${notStory ? '✅ PASS' : '❌ FAIL'}`);
+if (notStory) passCount++;
+else failCount++;
+
+const peerA = Utils.parseTelegramMessageLink('https://t.me/c/111/10');
+const peerB = Utils.parseTelegramMessageLink('https://t.me/c/111/20');
+const peerC = Utils.parseTelegramMessageLink('https://t.me/c/222/20');
+const peerSame = Utils.sameMessageLinkPeer(peerA, peerB);
+const peerDiff = !Utils.sameMessageLinkPeer(peerA, peerC);
+console.log(`sameMessageLinkPeer same: ${peerSame ? '✅ PASS' : '❌ FAIL'}`);
+console.log(`sameMessageLinkPeer diff: ${peerDiff ? '✅ PASS' : '❌ FAIL'}`);
+if (peerSame) passCount++;
+else failCount++;
+if (peerDiff) passCount++;
+else failCount++;
+
+const s1 = Utils.parseTelegramStoryLink('https://t.me/Foo/s/1');
+const s2 = Utils.parseTelegramStoryLink('https://t.me/foo/s/9');
+const s3 = Utils.parseTelegramStoryLink('https://t.me/bar/s/9');
+const storySame = Utils.sameStoryLinkPeer(s1, s2);
+const storyDiff = !Utils.sameStoryLinkPeer(s1, s3);
+console.log(`sameStoryLinkPeer same: ${storySame ? '✅ PASS' : '❌ FAIL'}`);
+console.log(`sameStoryLinkPeer diff: ${storyDiff ? '✅ PASS' : '❌ FAIL'}`);
+if (storySame) passCount++;
+else failCount++;
+if (storyDiff) passCount++;
+else failCount++;
+console.log('');
+
 // Test amount extraction
 console.log('💰 Test Amount Extraction:');
 console.log('==========================\n');

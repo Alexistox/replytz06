@@ -885,6 +885,112 @@ class Utils {
     return { username, messageId };
   }
 
+  /**
+   * Story link: https://t.me/username/s/12
+   * @returns {RegExp}
+   */
+  static getStoryLinkRegex() {
+    return /^(?:https?:\/\/)?(?:www\.)?(?:t(?:elegram)?\.(?:me|dog|org))\/([A-Za-z0-9_]+)\/s\/(\d+)\/?$/i;
+  }
+
+  static isTelegramStoryLink(input) {
+    if (!input || typeof input !== 'string') return false;
+    let raw = input.trim().replace(/[),.;]+$/, '');
+    const extracted = Utils.extractTelegramMessageLink(raw);
+    if (extracted) raw = extracted;
+    raw = raw.split('?', 1)[0].trim();
+    if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+    try {
+      const url = new URL(raw);
+      const host = (url.hostname || '').toLowerCase();
+      if (!['t.me', 'telegram.me', 'telegram.dog', 'www.t.me', 'telegram.org', 'www.telegram.org'].includes(host)) {
+        return false;
+      }
+      const parts = url.pathname.split('/').filter(Boolean);
+      return (
+        parts.length >= 3 &&
+        parts[1].toLowerCase() === 's' &&
+        /^\d+$/.test(parts[2]) &&
+        !/^(joinchat|addstickers|share|proxy|socks|iv|c)$/i.test(parts[0])
+      );
+    } catch (_e) {
+      return false;
+    }
+  }
+
+  /**
+   * @returns {{ username: string, storyId: number } | { error: string }}
+   */
+  static parseTelegramStoryLink(input) {
+    if (!input || typeof input !== 'string') {
+      return { error: 'Thiếu link story Telegram' };
+    }
+    let raw = input.trim().replace(/[),.;]+$/, '');
+    const extracted = Utils.extractTelegramMessageLink(raw);
+    if (extracted) raw = extracted;
+    raw = raw.split('?', 1)[0].trim();
+    if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+
+    try {
+      const url = new URL(raw);
+      const host = (url.hostname || '').toLowerCase();
+      if (!['t.me', 'telegram.me', 'telegram.dog', 'www.t.me', 'telegram.org', 'www.telegram.org'].includes(host)) {
+        return { error: 'Chỉ hỗ trợ link t.me story' };
+      }
+      const parts = url.pathname.split('/').filter(Boolean);
+      if (
+        parts.length < 3 ||
+        parts[1].toLowerCase() !== 's' ||
+        !/^\d+$/.test(parts[2])
+      ) {
+        return {
+          error:
+            'Link story không hợp lệ. Ví dụ: https://t.me/username/s/12',
+        };
+      }
+      const username = parts[0];
+      if (
+        !username ||
+        /^(joinchat|addstickers|share|proxy|socks|iv|c)$/i.test(username)
+      ) {
+        return { error: 'Username story không hợp lệ' };
+      }
+      const storyId = parseInt(parts[2], 10);
+      if (!storyId || storyId < 1) {
+        return { error: 'Story id không hợp lệ' };
+      }
+      return { username, storyId };
+    } catch (_e) {
+      return { error: 'Link story không hợp lệ' };
+    }
+  }
+
+  /** Khóa peer để so khớp 2 link post (/bdl) */
+  static messageLinkPeerKey(parsed) {
+    if (!parsed || parsed.error) return null;
+    if (parsed.chatId) return `id:${String(parsed.chatId)}`;
+    if (parsed.username) return `user:${String(parsed.username).toLowerCase()}`;
+    return null;
+  }
+
+  static sameMessageLinkPeer(a, b) {
+    const ka = Utils.messageLinkPeerKey(a);
+    const kb = Utils.messageLinkPeerKey(b);
+    return !!(ka && kb && ka === kb);
+  }
+
+  static sameStoryLinkPeer(a, b) {
+    if (!a || !b || a.error || b.error) return false;
+    if (!a.username || !b.username) return false;
+    return String(a.username).toLowerCase() === String(b.username).toLowerCase();
+  }
+
+  /** Cap khoảng /bdl /bdls mỗi lần (env BDL_MAX_RANGE, mặc định 200) */
+  static getBdlMaxRange() {
+    const n = parseInt(process.env.BDL_MAX_RANGE || '200', 10);
+    return Number.isFinite(n) && n > 0 ? n : 200;
+  }
+
   // ================== CAL (/cal máy tính) ==================
 
   static _mathCalInstance = null;

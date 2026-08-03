@@ -780,6 +780,7 @@ class BankTransactionUserbot {
         break;
 
       case '/copylink':
+      case '/dl':
         if (!this.isOwnerOrAdmin(originalMessage)) {
           await this.sendReply(
             chatId,
@@ -789,6 +790,47 @@ class BankTransactionUserbot {
           return;
         }
         await this.handleCopyLinkCommand(args, chatId, messageId, originalMessage);
+        break;
+
+      case '/bdl':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleBatchDlCommand(args, chatId, messageId, originalMessage);
+        break;
+
+      case '/dls':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleDownloadStoryCommand(args, chatId, messageId, originalMessage);
+        break;
+
+      case '/bdls':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleBatchDownloadStoryCommand(
+          args,
+          chatId,
+          messageId,
+          originalMessage
+        );
         break;
 
       case '/cal':
@@ -1006,7 +1048,10 @@ class BankTransactionUserbot {
 /listforward2 - Xem global forward rules 👑
 /copyall - Copy lịch sử vào nhóm này 👑
 /newcopy - Copy tin mới (sau /copyall) 👑
-/copylink - Copy album/video từ link t.me vào nhóm này 👑
+/copylink hoặc /dl - Copy 1 post từ link t.me 👑
+/bdl - Batch copy posts theo khoảng link 👑
+/dls - Tải story từ link t.me/.../s/id 👑
+/bdls - Batch stories theo khoảng link 👑
 /help2 hoặc /help 2 - Hướng dẫn đầy đủ (admin) 👑
 
 👑 = Admin only commands
@@ -1056,10 +1101,13 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 
 **Lưu ý Pic2:** chỉ chạy khi user gửi **ảnh** (không tính sticker). Nhiều rule cùng khớp một user → dùng rule **đầu tiên** trong list (một reply cho một tin ảnh).
 
-**Commands - Copy hàng loạt (👑 admin, gõ trong nhóm/kênh đích):**
+**Commands - Copy / Download từ link (👑 admin, gõ trong nhóm/kênh đích):**
 /copyall [thời gian] [id nguồn] — Copy lịch sử từ nhóm/kênh nguồn vào **chat đang gõ lệnh**. Thời gian: \`24h\`, \`7d\`, \`2w\` hoặc ngày \`YYYY-MM-DD\` (UTC 00:00). Một tham số là ID (số), một tham số là mốc thời gian (thứ tự tùy ý).
 /newcopy [id nguồn] — Copy các tin **mới hơn** watermark lần copy gần nhất (sau khi đã chạy /copyall ít nhất một lần cho cặp nguồn + đích này).
-/copylink [link t.me] — Lấy **1 tin hoặc cả album** (ảnh/video + **caption**) từ link Telegram vào **chat đang gõ**. Ưu tiên **copy nhanh**; chỉ **re-upload** khi lỗi (vd. **restrict saving content**). Bot phải xem được chat nguồn. Ví dụ: \`/copylink https://t.me/c/1234567890/42\`
+/copylink hoặc /dl [link t.me] — Lấy **1 tin hoặc cả album** (ảnh/video + **caption**) từ link post. Ưu tiên copy nhanh; chỉ re-upload khi lỗi (restrict). Ví dụ: \`/dl https://t.me/c/1234567890/42\`
+/bdl [start_link] [end_link] — Batch copy posts theo khoảng message id (cùng kênh). Ví dụ: \`/bdl https://t.me/mychannel/100 https://t.me/mychannel/120\`. Tối đa mỗi lần: env \`BDL_MAX_RANGE\` (mặc định 200).
+/dls [story_link] — Tải **1 story** (ảnh/video). Ví dụ: \`/dls https://t.me/username/s/12\`. Story thường ~24h trừ khi ghim; session phải follow / xem được.
+/bdls [start_story] [end_story] — Batch stories cùng username. Ví dụ: \`/bdls https://t.me/username/s/10 https://t.me/username/s/25\`
 
 **Giới hạn & lưu ý:** số tin tối đa mỗi lần quét/gửi cấu hình trong \`config.js\` (\`copyAllMaxCollect\`, \`copyAllMaxCopy\`) hoặc env \`COPYALL_MAX_COLLECT\` / \`COPYALL_MAX_COPY\`; mặc định 5000 / 3000. Có delay chống flood — tăng quá cao dễ FLOOD_WAIT. Một số loại (poll, v.v.) có thể chỉ forward. Album rất lớn có thể không gom đủ. Hết cap thì dùng /newcopy, không chạy lại /copyall cùng mốc.
 
@@ -1107,7 +1155,10 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /pic2 - Hướng dẫn Pic2 (admin, xem thêm mục Pic2 phía trên)
 /copyall - Copy lịch sử từ nguồn vào nhóm này (admin)
 /newcopy - Copy tin mới sau watermark (admin)
-/copylink - Copy album/video từ link t.me (kể cả restrict content) (admin)
+/copylink hoặc /dl - Copy 1 post/album từ link (admin)
+/bdl - Batch posts theo khoảng 2 link (admin)
+/dls - Tải 1 story từ link (admin)
+/bdls - Batch stories theo khoảng 2 link (admin)
 /help2 hoặc /help 2 - Hiển thị hướng dẫn này (admin)
 
 ⚠️ **Lưu ý chung:** 
@@ -2910,6 +2961,472 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       } catch (e2) {
         await this.sendReply(chatId, messageId, `❌ Lỗi: ${e.message}`);
       }
+    }
+  }
+
+  async resolvePeerFromMessageLink(parsed) {
+    if (parsed.username) {
+      return this.client.getEntity(parsed.username);
+    }
+    return this.client.getEntity(parsed.chatId);
+  }
+
+  /**
+   * /bdl <start_link> <end_link> — batch copy posts theo khoảng message id
+   */
+  async handleBatchDlCommand(args, chatId, messageId, originalMessage) {
+    if (!args || args.length < 2) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Dùng: `/bdl <start_link> <end_link>`\n' +
+          'Ví dụ: `/bdl https://t.me/mychannel/100 https://t.me/mychannel/120`'
+      );
+      return;
+    }
+
+    const startParsed = Utils.parseTelegramMessageLink(args[0]);
+    const endParsed = Utils.parseTelegramMessageLink(args[1]);
+    if (startParsed.error) {
+      await this.sendReply(chatId, messageId, `❌ Link đầu: ${startParsed.error}`);
+      return;
+    }
+    if (endParsed.error) {
+      await this.sendReply(chatId, messageId, `❌ Link cuối: ${endParsed.error}`);
+      return;
+    }
+    if (!Utils.sameMessageLinkPeer(startParsed, endParsed)) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❌ Hai link phải cùng một kênh/nhóm/username'
+      );
+      return;
+    }
+
+    let startId = startParsed.messageId;
+    let endId = endParsed.messageId;
+    if (startId > endId) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❌ Message id đầu không được lớn hơn id cuối'
+      );
+      return;
+    }
+
+    const maxRange = Utils.getBdlMaxRange();
+    const span = endId - startId + 1;
+    if (span > maxRange) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Khoảng quá lớn (${span} id). Tối đa ${maxRange}/lần (env \`BDL_MAX_RANGE\`).`
+      );
+      return;
+    }
+
+    let sourcePeer;
+    try {
+      sourcePeer = await this.resolvePeerFromMessageLink(startParsed);
+    } catch (e) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Không truy cập được nguồn: ${e.message}`
+      );
+      return;
+    }
+
+    const startMsg = await this.client.sendMessage(chatId, {
+      message: `📥 Batch download posts \`${startId}\`–\`${endId}\`…`,
+      replyTo: messageId,
+    });
+
+    const DELAY_MS = 150;
+    const processedAlbums = new Set();
+    let copied = 0;
+    let skipped = 0;
+    let failed = 0;
+    let albums = 0;
+
+    try {
+      for (let msgId = startId; msgId <= endId; msgId++) {
+        let msg;
+        try {
+          const fetched = await this.invokeFloodSafe(
+            () => this.client.getMessages(sourcePeer, { ids: [msgId] }),
+            'getMessages bdl'
+          );
+          msg = Array.isArray(fetched) ? fetched[0] : fetched;
+        } catch (e) {
+          Utils.log(`⚠️ bdl get ${msgId}: ${e.message}`);
+          failed++;
+          continue;
+        }
+
+        if (!msg || !msg.id || this.isServiceMessage(msg)) {
+          skipped++;
+          continue;
+        }
+
+        if (msg.groupedId != null) {
+          const g = String(msg.groupedId);
+          if (processedAlbums.has(g)) {
+            skipped++;
+            continue;
+          }
+          processedAlbums.add(g);
+        }
+
+        if (!Utils.canCopyMessage(msg)) {
+          skipped++;
+          continue;
+        }
+
+        if (msg.chatId == null) {
+          try {
+            msg.chatId = sourcePeer.id ?? startParsed.chatId;
+          } catch (_e) {
+            /* ignore */
+          }
+        }
+
+        let result = await this.copyMessage(msg, chatId, sourcePeer);
+        if (!result || !result.success) {
+          result = await this.reuploadMessage(msg, chatId, sourcePeer);
+        }
+
+        if (result && result.success) {
+          if (result.skippedPolicy) {
+            skipped++;
+          } else {
+            copied++;
+            if (result.albumSize != null && result.albumSize > 1) albums++;
+          }
+        } else {
+          failed++;
+        }
+
+        if ((copied + skipped + failed) % 10 === 0) {
+          try {
+            await this.client.editMessage(chatId, {
+              message: startMsg.id,
+              text:
+                `📥 Batch… id ${msgId}/${endId}\n` +
+                `Đã gửi: ${copied} | Bỏ qua: ${skipped} | Lỗi: ${failed}`,
+            });
+          } catch (_e) {
+            /* ignore */
+          }
+        }
+
+        if (DELAY_MS > 0) {
+          await new Promise((r) => setTimeout(r, DELAY_MS));
+        }
+      }
+
+      await this.client.editMessage(chatId, {
+        message: startMsg.id,
+        text:
+          `✅ Batch xong \`${startId}\`–\`${endId}\`\n` +
+          `Đã gửi: ${copied} | Bỏ qua: ${skipped} | Lỗi: ${failed}` +
+          (albums ? ` | Album: ${albums}` : ''),
+      });
+    } catch (e) {
+      Utils.log(`❌ bdl: ${e.message}`);
+      try {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ Batch lỗi: ${e.message}\nĐã gửi: ${copied} | Bỏ qua: ${skipped} | Lỗi: ${failed}`,
+        });
+      } catch (e2) {
+        await this.sendReply(chatId, messageId, `❌ Batch lỗi: ${e.message}`);
+      }
+    }
+  }
+
+  /**
+   * /dls <story_link> — tải 1 story vào chat hiện tại
+   */
+  async handleDownloadStoryCommand(args, chatId, messageId, originalMessage) {
+    const linkRaw =
+      Utils.extractTelegramMessageLink(args) ||
+      Utils.extractTelegramMessageLink(
+        originalMessage?.message || originalMessage?.text || ''
+      );
+
+    if (!linkRaw || !Utils.isTelegramStoryLink(linkRaw)) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Dùng: `/dls https://t.me/username/s/12`\n' +
+          'Bot (user session) phải follow / xem được story.'
+      );
+      return;
+    }
+
+    const parsed = Utils.parseTelegramStoryLink(linkRaw);
+    if (parsed.error) {
+      await this.sendReply(chatId, messageId, `❌ ${parsed.error}`);
+      return;
+    }
+
+    const startMsg = await this.client.sendMessage(chatId, {
+      message: `📖 Đang lấy story \`@${parsed.username}/s/${parsed.storyId}\`…`,
+      replyTo: messageId,
+    });
+
+    try {
+      const result = await this.downloadAndSendStory(
+        parsed.username,
+        parsed.storyId,
+        chatId
+      );
+      if (result.success) {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `✅ Đã gửi story \`@${parsed.username}/s/${parsed.storyId}\``,
+        });
+      } else if (result.skipped) {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `⏭️ ${result.error || 'Story không có / đã hết hạn'}`,
+        });
+      } else {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ ${result.error || 'Không tải được story'}`,
+        });
+      }
+    } catch (e) {
+      Utils.log(`❌ dls: ${e.message}`);
+      try {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ Lỗi: ${e.message}`,
+        });
+      } catch (e2) {
+        await this.sendReply(chatId, messageId, `❌ Lỗi: ${e.message}`);
+      }
+    }
+  }
+
+  /**
+   * /bdls <start_story> <end_story> — batch stories cùng user
+   */
+  async handleBatchDownloadStoryCommand(args, chatId, messageId, originalMessage) {
+    if (!args || args.length < 2) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Dùng: `/bdls <start_link> <end_link>`\n' +
+          'Ví dụ: `/bdls https://t.me/username/s/10 https://t.me/username/s/25`'
+      );
+      return;
+    }
+
+    const startParsed = Utils.parseTelegramStoryLink(args[0]);
+    const endParsed = Utils.parseTelegramStoryLink(args[1]);
+    if (startParsed.error) {
+      await this.sendReply(chatId, messageId, `❌ Link đầu: ${startParsed.error}`);
+      return;
+    }
+    if (endParsed.error) {
+      await this.sendReply(chatId, messageId, `❌ Link cuối: ${endParsed.error}`);
+      return;
+    }
+    if (!Utils.sameStoryLinkPeer(startParsed, endParsed)) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❌ Hai link phải cùng một username/channel'
+      );
+      return;
+    }
+
+    let startId = startParsed.storyId;
+    let endId = endParsed.storyId;
+    if (startId > endId) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❌ Story id đầu không được lớn hơn id cuối'
+      );
+      return;
+    }
+
+    const maxRange = Utils.getBdlMaxRange();
+    const span = endId - startId + 1;
+    if (span > maxRange) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Khoảng quá lớn (${span} id). Tối đa ${maxRange}/lần (env \`BDL_MAX_RANGE\`).`
+      );
+      return;
+    }
+
+    const username = startParsed.username;
+    const startMsg = await this.client.sendMessage(chatId, {
+      message: `📖 Batch stories \`@${username}\` \`${startId}\`–\`${endId}\`…`,
+      replyTo: messageId,
+    });
+
+    const DELAY_MS = 200;
+    let copied = 0;
+    let skipped = 0;
+    let failed = 0;
+
+    try {
+      for (let sid = startId; sid <= endId; sid++) {
+        const result = await this.downloadAndSendStory(username, sid, chatId);
+        if (result.success) {
+          copied++;
+        } else if (result.skipped) {
+          skipped++;
+        } else {
+          failed++;
+        }
+
+        if ((copied + skipped + failed) % 5 === 0) {
+          try {
+            await this.client.editMessage(chatId, {
+              message: startMsg.id,
+              text:
+                `📖 Batch stories… ${sid}/${endId}\n` +
+                `Đã gửi: ${copied} | Bỏ qua: ${skipped} | Lỗi: ${failed}`,
+            });
+          } catch (_e) {
+            /* ignore */
+          }
+        }
+
+        if (DELAY_MS > 0) {
+          await new Promise((r) => setTimeout(r, DELAY_MS));
+        }
+      }
+
+      await this.client.editMessage(chatId, {
+        message: startMsg.id,
+        text:
+          `✅ Batch stories xong \`@${username}\` \`${startId}\`–\`${endId}\`\n` +
+          `Đã gửi: ${copied} | Bỏ qua: ${skipped} | Lỗi: ${failed}`,
+      });
+    } catch (e) {
+      Utils.log(`❌ bdls: ${e.message}`);
+      try {
+        await this.client.editMessage(chatId, {
+          message: startMsg.id,
+          text: `❌ Batch stories lỗi: ${e.message}\nĐã gửi: ${copied} | Bỏ qua: ${skipped} | Lỗi: ${failed}`,
+        });
+      } catch (e2) {
+        await this.sendReply(chatId, messageId, `❌ ${e.message}`);
+      }
+    }
+  }
+
+  /**
+   * Fetch story by id and send media to destChatId
+   * @returns {{ success: boolean, skipped?: boolean, error?: string }}
+   */
+  async downloadAndSendStory(username, storyId, destChatId) {
+    const { Api } = require('telegram');
+    const { CustomFile } = require('telegram/client/uploads');
+
+    try {
+      const peer = await this.client.getEntity(username);
+      const inputPeer = await this.client.getInputEntity(peer);
+
+      const storiesResult = await this.invokeFloodSafe(
+        () =>
+          this.client.invoke(
+            new Api.stories.GetStoriesByID({
+              peer: inputPeer,
+              id: [storyId],
+            })
+          ),
+        'GetStoriesByID'
+      );
+
+      const stories = storiesResult?.stories || [];
+      const story = stories.find(
+        (s) => s && s.id === storyId && s.className === 'StoryItem'
+      );
+
+      if (!story) {
+        // StoryItemDeleted / StoryItemSkipped / missing
+        return {
+          success: false,
+          skipped: true,
+          error: 'Story không tồn tại hoặc đã hết hạn',
+        };
+      }
+
+      if (!story.media) {
+        if (story.caption) {
+          const caption = Utils.sanitizeCopyText(story.caption);
+          if (caption) {
+            await this.client.sendMessage(destChatId, { message: caption });
+            return { success: true };
+          }
+        }
+        return {
+          success: false,
+          skipped: true,
+          error: 'Story không có media',
+        };
+      }
+
+      const buf = await this.invokeFloodSafe(
+        () => this.client.downloadMedia(story.media, {}),
+        'downloadMedia story'
+      );
+      if (!buf) {
+        return { success: false, error: 'downloadMedia story rỗng' };
+      }
+
+      let ext = 'bin';
+      const media = story.media;
+      if (media.className === 'MessageMediaPhoto') ext = 'jpg';
+      else if (media.document) {
+        const mime = media.document.mimeType || '';
+        if (mime.includes('video')) ext = 'mp4';
+        else if (mime.includes('png')) ext = 'png';
+        else if (mime.includes('webp')) ext = 'webp';
+        else if (mime.includes('gif')) ext = 'gif';
+        else if (mime.includes('jpeg') || mime.includes('jpg')) ext = 'jpg';
+      } else if (media.photo) {
+        ext = 'jpg';
+      }
+
+      const fileName = `${username}_story_${storyId}.${ext}`;
+      const file = Buffer.isBuffer(buf)
+        ? new CustomFile(fileName, buf.length, '', buf)
+        : buf;
+
+      const caption = Utils.sanitizeCopyText(story.caption || '');
+      await this.invokeFloodSafe(
+        () =>
+          this.client.sendFile(destChatId, {
+            file,
+            caption: caption || '',
+            supportsStreaming: true,
+          }),
+        'sendFile story'
+      );
+      return { success: true };
+    } catch (e) {
+      const msg = e.message || String(e);
+      if (
+        /STORY_EXPIRED|STORY_NOT_FOUND|PEER_ID_INVALID|USERNAME_NOT_OCCUPIED/i.test(
+          msg
+        )
+      ) {
+        return { success: false, skipped: true, error: msg };
+      }
+      Utils.log(`❌ downloadAndSendStory @${username}/${storyId}: ${msg}`);
+      return { success: false, error: msg };
     }
   }
 
