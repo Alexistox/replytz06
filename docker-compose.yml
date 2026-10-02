@@ -25,3 +25,5 @@ services:
       - ./settings.json:/app/settings.json
       # Session đăng nhập (tự tạo/ghi sau lần đầu). Trước khi chạy Docker lần đầu: touch telegram.session
       - ./telegram.session:/app/telegram.session
+      # Ảnh/video lưu bằng /z (một slot). Tạo thư mục trên host nếu chưa có: mkdir z-media
+      - ./z-media:/app/z-media

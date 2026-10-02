@@ -152,6 +152,45 @@ class Utils {
     return false;
   }
 
+  /**
+   * Ảnh hoặc video trên tin GramJS.
+   * Nhận MessageMediaPhoto, document image/*, document video/* (kể cả DocumentAttributeVideo).
+   * Bỏ sticker và audio/voice.
+   * @returns {'photo'|'video'|null}
+   */
+  static getZMediaKind(message) {
+    if (!message || !message.media) return null;
+    const media = message.media;
+    if (media.className === 'MessageMediaPhoto') return 'photo';
+    if (media.className !== 'MessageMediaDocument' || !media.document) return null;
+
+    const doc = media.document;
+    const mime = String(doc.mimeType || '').toLowerCase();
+    const attrs = Array.isArray(doc.attributes) ? doc.attributes : [];
+    const attrName = (a) => (a && (a.className || (a.constructor && a.constructor.name))) || '';
+    if (attrs.some((a) => attrName(a) === 'DocumentAttributeSticker')) return null;
+    if (attrs.some((a) => attrName(a) === 'DocumentAttributeAudio')) return null;
+
+    if (mime.startsWith('image/')) return 'photo';
+    const isVideo = attrs.some((a) => attrName(a) === 'DocumentAttributeVideo');
+    if (mime.startsWith('video/') || isVideo) return 'video';
+    return null;
+  }
+
+  /** Đuôi file khi lưu slot /z */
+  static zMediaFileExtension(message, kind) {
+    const mime = String(message?.media?.document?.mimeType || '').toLowerCase();
+    if (kind === 'photo') {
+      if (mime.includes('png')) return 'png';
+      if (mime.includes('webp')) return 'webp';
+      if (mime.includes('gif')) return 'gif';
+      return 'jpg';
+    }
+    if (mime.includes('webm')) return 'webm';
+    if (mime.includes('quicktime')) return 'mov';
+    return 'mp4';
+  }
+
   // Kiểm tra user match với target (username hoặc user ID)
   static isTargetUser(sender, targetUser) {
     if (!sender || !targetUser) return false;

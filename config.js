@@ -30,6 +30,7 @@ sessionString: "",
     pic2Settings: {}, // Pic2: { [groupId]: [ { id, enabled, targetUser, replyMessage }, ... ] }
     forwardRules: [], // Rules cho auto forward: { sourceGroupId, destGroupId, trigger, createdBy, createdTime, status }
     copyAllWatermark: {}, // /copyall & /newcopy: { "sourceId_destId": lastMessageId }
+    zSaved: null, // /z: { filePath, kind, caption, savedAt, savedBy } — một slot toàn bot
     adminUsers: [] // Danh sách user IDs có quyền admin: [userId1, userId2, ...]
   }
 }; 

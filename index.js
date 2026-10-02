@@ -869,6 +869,220 @@ class BankTransactionUserbot {
         }
         await this.handleCalCommand(['off'], chatId, messageId);
         break;
+
+      case '/z':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleZCommand(chatId, messageId, originalMessage);
+        break;
+    }
+  }
+
+  /** Phần chữ sau /z hoặc /z@bot — giữ nguyên khoảng trắng trong caption */
+  extractZCaption(messageText) {
+    const raw = String(messageText || '').trim();
+    const match = raw.match(/^\/z(?:@\S+)?\s*([\s\S]*)$/i);
+    return match ? match[1].trim() : '';
+  }
+
+  resolveZMediaPath(filePath) {
+    const path = require('path');
+    if (!filePath) return '';
+    return path.isAbsolute(filePath) ? filePath : path.join(__dirname, filePath);
+  }
+
+  async writeDownloadedZMedia(data, dest) {
+    const fs = require('fs');
+    const path = require('path');
+    const fsp = fs.promises;
+    if (Buffer.isBuffer(data) || data instanceof Uint8Array) {
+      await fsp.writeFile(dest, Buffer.from(data));
+      return;
+    }
+    if (typeof data === 'string' && data) {
+      if (path.resolve(data) !== path.resolve(dest)) {
+        await fsp.copyFile(data, dest);
+      }
+      return;
+    }
+    if (data && typeof data === 'object') {
+      const buf = data.buffer || data.bytes;
+      if (Buffer.isBuffer(buf) || buf instanceof Uint8Array) {
+        await fsp.writeFile(dest, Buffer.from(buf));
+        return;
+      }
+      if (typeof data.path === 'string' && fs.existsSync(data.path)) {
+        if (path.resolve(data.path) !== path.resolve(dest)) {
+          await fsp.copyFile(data.path, dest);
+        }
+        return;
+      }
+    }
+    throw new Error('downloadMedia trả về dữ liệu không ghi được');
+  }
+
+  /**
+   * /z — một slot toàn bot.
+   * Tin có ảnh/video, hoặc reply ảnh/video: lưu (ghi đè).
+   * Đúng /z không media: gửi lại rồi xóa tin lệnh.
+   */
+  async handleZCommand(chatId, messageId, originalMessage) {
+    const Z_CAPTION_MAX = 1024;
+    try {
+      const messageText = originalMessage?.message || originalMessage?.text || '';
+      const caption = this.extractZCaption(messageText);
+      const isBare = /^\/z(?:@\S+)?$/i.test(String(messageText || '').trim());
+
+      const ownKind = Utils.getZMediaKind(originalMessage);
+      if (originalMessage && originalMessage.media) {
+        if (!ownKind) {
+          await this.sendReply(chatId, messageId, '❗ Chỉ lưu được ảnh hoặc video');
+          return;
+        }
+        if (caption.length > Z_CAPTION_MAX) {
+          await this.sendReply(chatId, messageId, '❗ Caption tối đa 1024 ký tự');
+          return;
+        }
+        await this.saveZMedia(originalMessage, ownKind, caption, chatId, messageId, originalMessage);
+        return;
+      }
+
+      const replyToMsgId = originalMessage?.replyTo?.replyToMsgId;
+      if (replyToMsgId) {
+        const messages = await this.client.getMessages(chatId, { ids: [replyToMsgId] });
+        const replied = messages && messages.length > 0 ? messages[0] : null;
+        const replyKind = Utils.getZMediaKind(replied);
+        if (replyKind) {
+          if (caption.length > Z_CAPTION_MAX) {
+            await this.sendReply(chatId, messageId, '❗ Caption tối đa 1024 ký tự');
+            return;
+          }
+          await this.saveZMedia(replied, replyKind, caption, chatId, messageId, originalMessage);
+          return;
+        }
+        if (replied && replied.media) {
+          await this.sendReply(chatId, messageId, '❗ Tin được reply không phải ảnh hoặc video');
+          return;
+        }
+      }
+
+      if (isBare) {
+        await this.recallZMedia(chatId, messageId);
+        return;
+      }
+
+      await this.sendReply(
+        chatId,
+        messageId,
+        '❗ Gửi ảnh/video với caption bắt đầu bằng /z, hoặc reply ảnh/video bằng /z <caption>. Gõ /z để gửi lại.'
+      );
+    } catch (error) {
+      Utils.log(`❌ Lỗi /z: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Có lỗi khi xử lý /z');
+    }
+  }
+
+  async saveZMedia(sourceMessage, kind, caption, chatId, messageId, commandMessage) {
+    const fs = require('fs');
+    const path = require('path');
+    const fsp = fs.promises;
+    const dir = path.join(__dirname, 'z-media');
+    await fsp.mkdir(dir, { recursive: true });
+
+    const ext = Utils.zMediaFileExtension(sourceMessage, kind);
+    const relPath = `z-media/saved.${ext}`;
+    const dest = path.join(dir, `saved.${ext}`);
+
+    const data = await this.invokeFloodSafe(
+      () => this.client.downloadMedia(sourceMessage, {}),
+      'downloadMedia /z'
+    );
+    if (!data) {
+      await this.sendReply(chatId, messageId, '❌ Không tải được ảnh/video');
+      return;
+    }
+
+    const tmp = path.join(dir, `incoming-${Date.now()}.${ext}`);
+    try {
+      await this.writeDownloadedZMedia(data, tmp);
+      await fsp.copyFile(tmp, dest);
+    } finally {
+      if (fs.existsSync(tmp) && path.resolve(tmp) !== path.resolve(dest)) {
+        await fsp.unlink(tmp).catch(() => {});
+      }
+    }
+
+    const prevPath = this.settings.zSaved && this.settings.zSaved.filePath;
+    if (prevPath) {
+      const prevAbs = this.resolveZMediaPath(prevPath);
+      if (prevAbs && path.resolve(prevAbs) !== path.resolve(dest)) {
+        try {
+          if (fs.existsSync(prevAbs)) await fsp.unlink(prevAbs);
+        } catch (e) {
+          Utils.log(`⚠️ Không xóa được file /z cũ: ${e.message}`);
+        }
+      }
+    }
+
+    this.settings.zSaved = {
+      filePath: relPath,
+      kind,
+      caption: caption || '',
+      savedAt: new Date().toISOString(),
+      savedBy: Utils.getMessageSenderUserId(commandMessage),
+    };
+    Utils.saveSettings(this.settings);
+
+    const label = kind === 'video' ? 'video' : 'ảnh';
+    Utils.log(`💾 /z đã lưu ${label} → ${relPath}`);
+    await this.sendReply(
+      chatId,
+      messageId,
+      `✅ Đã lưu ${label}. Gõ /z (không kèm media) để gửi lại.`
+    );
+  }
+
+  async recallZMedia(chatId, messageId) {
+    const fs = require('fs');
+    const saved = this.settings.zSaved;
+    if (!saved || !saved.filePath) {
+      await this.sendReply(chatId, messageId, '❗ Chưa lưu ảnh hoặc video. Gửi media kèm /z hoặc reply /z <caption>.');
+      return;
+    }
+    const abs = this.resolveZMediaPath(saved.filePath);
+    if (!abs || !fs.existsSync(abs)) {
+      await this.sendReply(chatId, messageId, '❗ File đã lưu không còn. Hãy lưu lại ảnh hoặc video.');
+      return;
+    }
+
+    try {
+      await this.invokeFloodSafe(
+        () =>
+          this.client.sendFile(chatId, {
+            file: abs,
+            caption: saved.caption || '',
+            forceDocument: false,
+            supportsStreaming: saved.kind === 'video',
+          }),
+        'sendFile /z'
+      );
+    } catch (error) {
+      Utils.log(`❌ /z gửi lại thất bại: ${error.message}`);
+      await this.sendReply(chatId, messageId, '❌ Không gửi lại được ảnh/video đã lưu');
+      return;
+    }
+
+    try {
+      await this.client.deleteMessages(chatId, [messageId], { revoke: true });
+      Utils.log('🗑️ Đã xóa tin /z sau khi gửi lại');
+    } catch (error) {
+      Utils.log(`⚠️ Đã gửi /z nhưng không xóa được tin lệnh: ${error.message}`);
     }
   }
 
@@ -1101,6 +1315,12 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 
 **Lưu ý Pic2:** chỉ chạy khi user gửi **ảnh** (không tính sticker). Nhiều rule cùng khớp một user → dùng rule **đầu tiên** trong list (một reply cho một tin ảnh).
 
+**Commands - /z (lưu 1 ảnh hoặc video, 👑 admin, một mục toàn bot):**
+Gửi ảnh hoặc video, caption bắt đầu bằng \`/z\` rồi đến chữ cần giữ — ví dụ caption: \`/z Bán hàng ca đêm\`
+Reply một tin ảnh/video bằng \`/z <caption>\` — lưu media của tin đó. Caption có thể để trống.
+\`/z\` — gửi lại ảnh/video đã lưu kèm caption, rồi xóa tin \`/z\`.
+Chỉ một ảnh hoặc một video (không gom album). File, voice, sticker không được lưu. Lưu mới sẽ ghi đè mục cũ. Caption tối đa 1024 ký tự.
+
 **Commands - Copy / Download từ link (👑 admin, gõ trong nhóm/kênh đích):**
 /copyall [thời gian] [id nguồn] — Copy lịch sử từ nhóm/kênh nguồn vào **chat đang gõ lệnh**. Thời gian: \`24h\`, \`7d\`, \`2w\` hoặc ngày \`YYYY-MM-DD\` (UTC 00:00). Một tham số là ID (số), một tham số là mốc thời gian (thứ tự tùy ý).
 /newcopy [id nguồn] — Copy các tin **mới hơn** watermark lần copy gần nhất (sau khi đã chạy /copyall ít nhất một lần cho cặp nguồn + đích này).
@@ -1153,6 +1373,7 @@ Tin định dạng giao dịch ngân hàng không dùng làm biểu thức.
 /id (reply) - Xem ID của user được reply
 /groups - Xem danh sách groups bot tham gia (admin only)
 /pic2 - Hướng dẫn Pic2 (admin, xem thêm mục Pic2 phía trên)
+/z - Lưu hoặc gửi lại 1 ảnh/video (admin, xem mục /z phía trên)
 /copyall - Copy lịch sử từ nguồn vào nhóm này (admin)
 /newcopy - Copy tin mới sau watermark (admin)
 /copylink hoặc /dl - Copy 1 post/album từ link (admin)
