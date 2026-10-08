@@ -149,7 +149,7 @@ class BankTransactionUserbot {
       fs.writeFileSync(configPath, content, 'utf8');
       return true;
     } catch (e) {
-      Utils.log(`⚠️ Không ghi config.js (volume chỉ đọc?): ${e.message}`);
+      Utils.log(`⚠️ Không ghi config.js: ${e.message}`);
       return false;
     }
   }
@@ -158,13 +158,13 @@ class BankTransactionUserbot {
   async initializeClient() {
     try {
       // Kiểm tra API credentials
-      if (config.apiId === 'YOUR_API_ID' || config.apiHash === 'YOUR_API_HASH') {
-        throw new Error('Vui lòng cập nhật API credentials trong config.js');
+      if (!config.apiId || config.apiId === 'YOUR_API_ID' || !config.apiHash || config.apiHash === 'YOUR_API_HASH') {
+        throw new Error('Vui lòng đặt TELEGRAM_API_ID và TELEGRAM_API_HASH trong .env');
       }
 
       // Kiểm tra số điện thoại
-      if (config.phoneNumber === 'YOUR_PHONE_NUMBER') {
-        throw new Error('Vui lòng cập nhật số điện thoại trong config.js');
+      if (!config.phoneNumber || config.phoneNumber === 'YOUR_PHONE_NUMBER') {
+        throw new Error('Vui lòng đặt TELEGRAM_PHONE_NUMBER trong .env');
       }
 
       const loadedSession = this.loadSessionStringFromDisk();

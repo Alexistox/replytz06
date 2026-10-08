@@ -4,8 +4,7 @@ module.exports = {
   // 1. Truy cập: https://my.telegram.org/apps
   // 2. Đăng nhập bằng số điện thoại Telegram
   // 3. Tạo ứng dụng mới
-  // 4. Copy api_id và api_hash vào đây
-  // Docker: có thể đặt TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER trong docker-compose.yml
+  // 4. Điền TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_PHONE_NUMBER vào file .env
   apiId: process.env.TELEGRAM_API_ID || 'YOUR_API_ID',
   apiHash: process.env.TELEGRAM_API_HASH || 'YOUR_API_HASH',
   phoneNumber: process.env.TELEGRAM_PHONE_NUMBER || 'YOUR_PHONE_NUMBER',

@@ -4,14 +4,10 @@
   "description": "Userbot để phát hiện và reply tin nhắn giao dịch ngân hàng",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js",
+    "start": "node --env-file=.env index.js",
+    "dev": "nodemon --node-options=\"--env-file=.env\" index.js",
     "test": "node test.js",
-    "test-duplicate": "node test-duplicate.js",
-    "docker:build": "docker compose build",
-    "docker:up": "docker compose up -d",
-    "docker:logs": "docker compose logs -f replytz-userbot",
-    "docker:down": "docker compose down"
+    "test-duplicate": "node test-duplicate.js"
   },
   "dependencies": {
     "fs": "^0.0.1-security",

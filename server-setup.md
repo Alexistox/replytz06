@@ -173,27 +173,6 @@ sudo systemctl start bank-bot
 sudo systemctl status bank-bot
 ```
 
-### **Option 3: Docker (Advanced)**
-```dockerfile
-# Create Dockerfile
-FROM node:18-alpine
-
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-
-COPY . .
-
-USER node
-CMD ["node", "index.js"]
-```
-
-```bash
-# Build and run
-docker build -t bank-bot .
-docker run -d --name bank-bot --restart unless-stopped bank-bot
-```
-
 ## 🔧 **Server Configuration**
 
 ### **Firewall Settings**

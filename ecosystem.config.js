@@ -45,7 +45,7 @@ module.exports = {
     source_map_support: false,
     
     // Node.js options
-    node_args: ['--max-old-space-size=512']
+    node_args: ['--max-old-space-size=512', '--env-file=.env']
   }],
 
   // Deployment configuration (optional)
