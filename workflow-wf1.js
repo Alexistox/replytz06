@@ -23,7 +23,9 @@ const BTN = {
   editTx: /ch[iỉ]nh\s*giao\s*d[iị]ch/i,
   editTime: /th[oờ]i\s*gian|ch[iỉ]nh.*gi[oờ]|s[uử]a.*th[oờ]i/i,
   back: /quay\s*l[aạ]i|back|tr[oờ]|h[uủ]y|cancel|«|‹|⬅️/i,
-  nextPage: /ti[eế]p|next|sau|»|›|➡️|xem\s*th[eê]m/i,
+  // Button sang loạt giao dịch tiếp theo
+  nextPage:
+    /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|»|›|➡️|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i,
 };
 
 /**
@@ -500,9 +502,45 @@ class Wf1Runner {
     if (BTN.back.test(t) || BTN.nextPage.test(t)) return false;
     if (BTN.editTxMenu.test(t) || BTN.editTx.test(t)) return false;
     if (BTN.accountValid.test(t)) return false;
+    // Menu chỉnh GD — không phải dòng giao dịch
     if (/t[aạ]o\s*giao\s*d[iị]ch/i.test(t)) return false;
-    // Prefer buttons that look like tx rows (have money/date/id) — else any remaining
+    if (/lo[aạ]i\s*giao\s*d[iị]ch/i.test(t)) return false;
+    if (/s[uử]a\s*s[oố]\s*ti[eề]n|s[oố]\s*ti[eề]n/i.test(t)) return false;
+    if (/c[oộ]ng\s*ti[eề]n|tr[uừ]\s*ti[eề]n/i.test(t)) return false;
+    if (/n[oộ]i\s*dung|ghi\s*ch[uú]/i.test(t) && !DT_COMPACT_RE.test(t)) return false;
+    // Ưu tiên dòng có compact time / ngày giờ
+    if (DT_COMPACT_RE.test(t) || DT_SLASH_RE.test(t)) return true;
+    // Còn lại: button không phải menu đã lọc
     return true;
+  }
+
+  /**
+   * Sau chỉnh thời gian: chờ tin mới → Quay lại → Quay lại → về list GD.
+   * Sau bỏ qua/mở nhầm: Quay lại tối đa 2 lần cho đến khi thấy list hoặc next.
+   */
+  async returnToTransactionList(msg, peer, { afterEdit = false } = {}) {
+    if (afterEdit) {
+      await sleep(2500);
+      msg = (await this.getLatestMessage(peer)) || msg;
+    }
+    for (let i = 0; i < 2; i++) {
+      const flat = await this.getButtons(msg);
+      const txLike = flat.filter((b) => this.isLikelyTransactionButton(b.text));
+      const hasNext = !!findButton(flat, BTN.nextPage);
+      // Đã về list (có GD hoặc nút trang sau) và không chỉ còn Quay lại
+      if (txLike.length > 0 || (hasNext && i > 0)) {
+        break;
+      }
+      if (!findButton(flat, BTN.back)) {
+        await sleep(800);
+        msg = (await this.getLatestMessage(peer)) || msg;
+        continue;
+      }
+      await sleep(afterEdit ? 1200 : 800);
+      msg = await this.clickButton(msg, BTN.back, peer);
+    }
+    await sleep(800);
+    return (await this.getLatestMessage(peer)) || msg;
   }
 
   async processTransactionLoop(controlChatId, listMsg) {
@@ -565,10 +603,12 @@ class Wf1Runner {
           session.stats.errors += 1;
           await this.notify(
             controlChatId,
-            `⚠️ Không parse được thời gian Nội dung — bỏ qua.\n${body.slice(0, 350)}`,
+            `⚠️ Không parse được thời gian Nội dung — bỏ qua (có thể không phải dòng GD).\n${body.slice(0, 350)}`,
             replyTo
           );
-          msg = await this.tryBack(detail, peer);
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: false,
+          });
           continue;
         }
 
@@ -580,7 +620,9 @@ class Wf1Runner {
             `⏭️ Đã đúng (${contentTime}, không giây) — bỏ qua.`,
             replyTo
           );
-          msg = await this.tryBack(detail, peer);
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: false,
+          });
           continue;
         }
 
@@ -600,31 +642,39 @@ class Wf1Runner {
           fixedThisPass += 1;
           await this.notify(
             controlChatId,
-            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})`,
+            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n⏳ Chờ tin mới rồi Quay lại ×2…`,
             replyTo
           );
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: true,
+          });
         } catch (e) {
           session.stats.errors += 1;
           await this.notify(controlChatId, `⚠️ Không chỉnh được: ${e.message}`, replyTo);
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: false,
+          });
         }
-        msg = await this.tryBack(detail, peer);
       }
 
-      // Hết trang? thử next rồi quét tiếp
+      // Hết GD trên trang hiện tại → bấm button loạt tiếp theo (nếu có)
       flat = await this.getButtons(msg);
-      if (findButton(flat, BTN.nextPage) && fixedThisPass === 0) {
-        // Cùng lượt: sang trang nếu trang này không còn gì để sửa
-        const stillMismatchPossible = true;
-        if (stillMismatchPossible && findButton(flat, BTN.nextPage)) {
-          msg = await this.clickButton(msg, BTN.nextPage, peer);
-          continue;
-        }
+      const nextBtn = findButton(flat, BTN.nextPage);
+      if (nextBtn) {
+        await this.notify(
+          controlChatId,
+          `👉 Sang loạt giao dịch tiếp: ${nextBtn.text}`,
+          replyTo
+        );
+        msg = await this.clickButton(msg, nextBtn.text, peer);
+        continue;
       }
 
-      // Một lượt không sửa gì → coi như không còn GD lệch trên các trang đã quét
+      // Không còn trang sau; nếu lượt này không sửa gì → xong
       if (fixedThisPass === 0) {
         break;
       }
+      // Có sửa nhưng không còn nút next — quét lại trang hiện tại một vòng
     }
 
     const s = this.getSession(controlChatId);
@@ -643,17 +693,7 @@ class Wf1Runner {
   }
 
   async tryBack(msg, peer) {
-    try {
-      const flat = await this.getButtons(msg);
-      if (findButton(flat, BTN.back)) {
-        return await this.clickButton(msg, BTN.back, peer);
-      }
-    } catch {
-      /* ignore */
-    }
-    // Fallback: sometimes need to re-open list — return latest
-    await sleep(800);
-    return this.getLatestMessage(peer);
+    return this.returnToTransactionList(msg, peer, { afterEdit: false });
   }
 
   async editTimeOnDetail(detailMsg, peer, newTime) {

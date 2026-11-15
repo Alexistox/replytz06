@@ -31,10 +31,12 @@ Bot sẽ:
 7. Lặp từng giao dịch:
    - Đọc `Nội dung:` (lấy ngày giờ) và `Thời gian:`
    - Hỗ trợ compact trong Nội dung: `151126-18:34:26` = **15/11/2026 18:34** (DDMMYY-HH:mm:ss, **bỏ giây** khi chỉnh)
-   - Trùng → bỏ qua
-   - Khác → chỉnh mục thời gian theo Nội dung (format gửi: `dd/mm/yyyy HH:mm`)
+   - Trùng (và không còn giây) → bỏ qua
+   - Khác / còn giây → chỉnh mục thời gian (gửi `dd/mm/yyyy HH:mm`)
+   - Sau khi chỉnh: **chờ tin mới** → **Quay lại** → **Quay lại** lần nữa → về list
+   - Hết trang: bấm button **loạt giao dịch tiếp theo**
    - Báo cáo từng bước trong chat
-8. Dừng khi không còn GD lệch thời gian
+8. Dừng khi không còn GD lệch / còn giây (và hết trang)
 
 Hủy giữa chừng: `/wf1 off`
 
