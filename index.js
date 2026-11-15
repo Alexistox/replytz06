@@ -23,6 +23,7 @@ class BankTransactionUserbot {
     this.aiBusyChats = new Set();
     this.claudeCodeBusy = false;
     this.claudeCodeBusyChats = new Set();
+    this.claudeCodeSuppressOutUntil = new Map();
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -420,18 +421,28 @@ class BankTransactionUserbot {
         }
       }
 
-      if (message.out) {
-        return;
-      }
-
-      // Claude Code pilot (admin only)
+      // Claude Code pilot (/cc on): tin thường + Saved Messages (outgoing)
       if (
         groupSettings.claudeCodePilot === true &&
         messageText.trim() &&
-        this.isOwnerOrAdmin(message)
+        !String(messageText).startsWith('/') &&
+        (this.isOwnerOrAdmin(message) || message.out === true)
       ) {
-        this.processedMessages.set(messageKey, currentTime);
-        await this.handleClaudeCodePilotMessage(message, messageText);
+        const chatKey = String(chatId);
+        const suppressUntil = this.claudeCodeSuppressOutUntil.get(chatKey) || 0;
+        const busy =
+          this.claudeCodeBusy || this.claudeCodeBusyChats.has(chatKey);
+        if (message.out && (busy || Date.now() < suppressUntil)) {
+          // echo
+        } else {
+          this.processedMessages.set(messageKey, currentTime);
+          await this.handleClaudeCodePilotMessage(message, messageText);
+          return;
+        }
+      }
+
+      // Skip tin outgoing (trừ giao dịch ở trên)
+      if (message.out) {
         return;
       }
 
@@ -4423,8 +4434,8 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
         chatId,
         messageId,
         action === 'on'
-          ? '✅ Đã BẬT Claude Code pilot cho chat này.\nTin nhắn tiếp theo của bạn (admin) sẽ gửi tới Claude Code trên VPS để cầm userbot.'
-          : '❌ Đã TẮT Claude Code pilot cho chat này.'
+          ? '✅ Đã BẬT Claude Code pilot cho chat này.\nTừ giờ chỉ cần nhắn bình thường — không cần /cc.\nGõ /cc off để tắt.'
+          : '❌ Đã TẮT Claude Code pilot cho chat này.\nTin thường không còn gửi tới Claude Code.'
       );
       Utils.log(`🦞 /cc ${action} chat ${chatId}`);
       return;
@@ -4488,6 +4499,7 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     } finally {
       this.claudeCodeBusy = false;
       this.claudeCodeBusyChats.delete(chatKey);
+      this.claudeCodeSuppressOutUntil.set(chatKey, Date.now() + 8000);
     }
   }
 
