@@ -5,6 +5,11 @@ const readline = require('readline');
 
 const config = require('./config');
 const Utils = require('./utils');
+const Ai = require('./ai');
+const ClaudeCode = require('./claude-code');
+const { WfRunner } = require('./workflow-wf1');
+const { Wf2BdsdRunner, isPureBdsdList } = require('./workflow-wf2');
+const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
   constructor() {
@@ -14,6 +19,15 @@ class BankTransactionUserbot {
     this.processedMessages = new Map(); // Store timestamp with message
     this.processingMessages = new Set(); // Track currently processing messages
     this.eventHandlerRegistered = false; // Prevent duplicate event handlers
+    this.me = null;
+    this.aiHistory = new Ai.ChatHistoryStore(config.aiMaxHistory || 12);
+    this.controlServer = null;
+    this.aiBusyChats = new Set();
+    this.claudeCodeBusy = false;
+    this.claudeCodeBusyChats = new Set();
+    this.claudeCodeSuppressOutUntil = new Map();
+    this.wf1 = new WfRunner(this, { id: 'wf1', label: 'WF1' });
+    this.wf2 = new Wf2BdsdRunner(this);
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -23,6 +37,14 @@ class BankTransactionUserbot {
     
     Utils.log('🤖 Bank Transaction Userbot khởi tạo');
     Utils.log(`📊 Chế độ: Reply theo từng nhóm`);
+    const aiInfo = Ai.describeAiSetup(this.settings);
+    Utils.log(
+      `🧠 AI: ${aiInfo.label}/${aiInfo.model} (${aiInfo.configured ? 'có key' : 'chưa key'}) — auto-reply mặc định TẮT, bật bằng /ai on`
+    );
+    const cc = ClaudeCode.describeSetup();
+    Utils.log(
+      `🦞 Claude Code pilot: ${cc.enabled ? 'bật' : 'tắt'} — binary ${cc.binaryOk ? cc.bin : 'chưa thấy'}; /cc on trong DM với admin`
+    );
   }
 
   // Migrate từ format cũ (global replyEnabled) sang format mới (group-specific)
@@ -361,6 +383,24 @@ class BankTransactionUserbot {
     this.processingMessages.add(messageKey);
 
     try {
+      // WF2: list thuần /bdsd… (không cần /wf2) — chặn trước parseCommand
+      if (
+        (this.isOwnerOrAdmin(message) || message.out === true) &&
+        (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
+      ) {
+        const chatKeyWf2 = String(chatId);
+        const suppressUntilWf2 = this.claudeCodeSuppressOutUntil.get(chatKeyWf2) || 0;
+        if (!(message.out && Date.now() < suppressUntilWf2)) {
+          this.processedMessages.set(messageKey, currentTime);
+          const handledWf2 = await this.wf2.handleIncomingList(
+            chatId,
+            messageText,
+            messageId
+          );
+          if (handledWf2) return;
+        }
+      }
+
       // Kiểm tra commands trước (cho phép chính mình sử dụng commands)
       if (messageText.startsWith('/')) {
         // Mark as processed cho commands
@@ -395,19 +435,63 @@ class BankTransactionUserbot {
       }
 
       // Kiểm tra nếu chức năng reply đã bật cho group này
-      if (!groupSettings.replyEnabled) return;
-
-      // Kiểm tra xem có phải tin nhắn giao dịch không
-      if (Utils.isTransactionMessage(messageText)) {
-        // Mark as processed trước khi xử lý
-        this.processedMessages.set(messageKey, currentTime);
-        
-        // Cho phép reply cả tin nhắn từ chính mình nếu là tin nhắn giao dịch
-        await this.handleTransactionMessage(message, messageText);
+      if (groupSettings.replyEnabled) {
+        if (Utils.isTransactionMessage(messageText)) {
+          this.processedMessages.set(messageKey, currentTime);
+          await this.handleTransactionMessage(message, messageText);
+          return;
+        }
       }
-      // Skip các tin nhắn khác từ chính mình (outgoing)
-      else if (message.out) {
+
+      // WF1: đang chờ user chọn button tài khoản
+      if (
+        messageText.trim() &&
+        !String(messageText).startsWith('/') &&
+        this.wf1.isAwaitingUserInput(chatId) &&
+        (this.isOwnerOrAdmin(message) || message.out === true)
+      ) {
+        const chatKeyWf = String(chatId);
+        const suppressUntilWf = this.claudeCodeSuppressOutUntil.get(chatKeyWf) || 0;
+        if (!(message.out && Date.now() < suppressUntilWf)) {
+          this.processedMessages.set(messageKey, currentTime);
+          const handled = await this.wf1.handleUserAccountPick(
+            chatId,
+            messageText,
+            messageId
+          );
+          if (handled) return;
+        }
+      }
+
+      // Claude Code pilot (/cc on): tin thường + Saved Messages (outgoing)
+      if (
+        groupSettings.claudeCodePilot === true &&
+        messageText.trim() &&
+        !String(messageText).startsWith('/') &&
+        (this.isOwnerOrAdmin(message) || message.out === true)
+      ) {
+        const chatKey = String(chatId);
+        const suppressUntil = this.claudeCodeSuppressOutUntil.get(chatKey) || 0;
+        const busy =
+          this.claudeCodeBusy || this.claudeCodeBusyChats.has(chatKey);
+        if (message.out && (busy || Date.now() < suppressUntil)) {
+          // echo
+        } else {
+          this.processedMessages.set(messageKey, currentTime);
+          await this.handleClaudeCodePilotMessage(message, messageText);
+          return;
+        }
+      }
+
+      // Skip tin outgoing (trừ giao dịch ở trên)
+      if (message.out) {
         return;
+      }
+
+      // AI auto-reply theo chat (mặc định TẮT — /ai on)
+      if (groupSettings.aiEnabled === true && messageText.trim()) {
+        this.processedMessages.set(messageKey, currentTime);
+        await this.handleAiChatMessage(message, messageText, groupSettings);
       }
 
     } finally {
@@ -870,6 +954,89 @@ class BankTransactionUserbot {
         await this.handleCalCommand(['off'], chatId, messageId);
         break;
 
+      case '/ai':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleAiCommand(args, chatId, messageId);
+        break;
+
+      case '/aion':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleAiCommand(['on'], chatId, messageId);
+        break;
+
+      case '/aioff':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể sử dụng lệnh này'
+          );
+          return;
+        }
+        await this.handleAiCommand(['off'], chatId, messageId);
+        break;
+
+      case '/cc':
+      case '/claude':
+      case '/claudecode':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể dùng Claude Code pilot'
+          );
+          return;
+        }
+        await this.handleClaudeCodeCommand(args, chatId, messageId);
+        break;
+
+      case '/wfbot':
+      case '/wf1bot':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf1.handleWfBotCommand(args, chatId, messageId);
+        break;
+
+      case '/wf2bot':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf2.handleWfBotCommand(args, chatId, messageId);
+        break;
+
+      case '/wf1':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf1.handleWfCommand(args, chatId, messageId);
+        break;
+
+      case '/wf2':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf2.handleWfCommand(args, chatId, messageId, messageText);
+        break;
+
       case '/z':
         if (!this.isOwnerOrAdmin(originalMessage)) {
           await this.sendReply(
@@ -1204,10 +1371,19 @@ class BankTransactionUserbot {
     const hours = Math.floor(uptime / 3600);
     const minutes = Math.floor((uptime % 3600) / 60);
     
+    const aiChatStatus = groupSettings.aiEnabled === true ? '🟢 BẬT' : '🔴 TẮT';
+    const aiSetup = Ai.describeAiSetup(this.settings);
+    const aiKeyStatus = aiSetup.configured ? '🟢 có key' : '🔴 chưa key';
+
     // Đếm số group đã bật reply
     const groupReplyCount = this.settings.groupSettings ?
       Object.values(this.settings.groupSettings).filter((g) => g.replyEnabled).length : 0;
     const groupReplyStatus = groupReplyCount > 0 ? `🟢 ${groupReplyCount} groups` : '🔴 TẮT';
+    const aiEnabledCount = this.settings.groupSettings
+      ? Object.values(this.settings.groupSettings).filter((g) => g.aiEnabled === true).length
+      : 0;
+    const aiGlobalStatus =
+      aiEnabledCount > 0 ? `🟢 ${aiEnabledCount} chats` : '🔴 TẮT hết';
     // Đếm số pic2 rules (tất cả nhóm)
     const pic2RuleCount = Utils.countPic2Rules(this.settings);
     const pic2Status = pic2RuleCount > 0 ? `🟢 ${pic2RuleCount} rules` : '🔴 TẮT';
@@ -1234,6 +1410,9 @@ class BankTransactionUserbot {
 
 🤖 Bot: Đang hoạt động
 ⚙️ Reply giao dịch (nhóm này): ${status}
+🧠 AI chat (nhóm này): ${aiChatStatus}
+🧠 AI provider: ${aiSetup.label}/${aiSetup.model} (${aiKeyStatus})
+🧠 AI đã bật: ${aiGlobalStatus}
 🔢 Máy tính /cal (toàn bot): ${calGlobal}
 🌐 Reply giao dịch (tổng): ${groupReplyStatus}
 💬 Tin nhắn reply: "${this.settings.replyMessage}"
@@ -1248,6 +1427,8 @@ class BankTransactionUserbot {
 📝 Commands:
 /1 on - Bật reply cho nhóm này
 /1 off - Tắt reply cho nhóm này
+/ai on|off - Bật/tắt AI chat cho nhóm này (mặc định tắt) 👑
+/ai provider openai|claude|grok - Đổi model provider 👑
 /cal on - Bật máy tính toàn bot, mọi người gõ biểu thức (admin) 👑
 /cal on admin - Bật máy tính, chỉ admin gõ biểu thức (admin) 👑
 /cal off - Tắt máy tính toàn bot (admin) 👑
@@ -1283,6 +1464,20 @@ class BankTransactionUserbot {
 1. Tự động phát hiện tin nhắn giao dịch ngân hàng và reply bằng số "1"
 2. Tự động reply hình ảnh từ user cụ thể trong group cụ thể
 3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
+4. AI chat theo từng nhóm/DM — **mặc định TẮT**, bật bằng \`/ai on\`
+4b. Claude Code pilot — \`/cc on\` (iPhone Telegram → Claude Code VPS) 👑
+5. Control API localhost (ilsac: cổng 3848) để Cursor điều khiển
+
+**Commands - AI chat (👑 admin, theo từng chat — mặc định TẮT):**
+/ai — Xem trạng thái AI của chat này + provider
+/ai on | /ai off — Bật/tắt AI auto-reply cho chat này
+/ai on [chatId] | /ai off [chatId]
+/ai prompt [nội dung] | /ai prompt clear
+/ai clear — Xóa lịch sử hội thoại AI (RAM)
+/ai provider openai|claude|grok
+/ai model [tên-model]
+/aion | /aioff
+Control API: CONTROL_API_TOKEN + cổng 3848 (không trùng replytz05:3847).
 
 **Commands - Máy tính (/cal, 👑 chỉ admin bật/tắt — toàn bot):**
 /cal on - Bật: **mọi nhóm/kênh** — **mọi người** gửi biểu thức; bot trả **chỉ kết quả** (quote tin gốc)
@@ -4096,6 +4291,426 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
     }
   }
 
+  // ——— AI chat (per-chat, mặc định tắt) + Control API helpers ———
+
+  getGroupSettings(chatId) {
+    const groupId = String(chatId);
+    if (!this.settings.groupSettings) {
+      this.settings.groupSettings = {};
+    }
+    return this.settings.groupSettings[groupId] || { replyEnabled: false };
+  }
+
+  getAiChatState(chatId) {
+    const gs = this.getGroupSettings(chatId);
+    return {
+      enabled: gs.aiEnabled === true,
+      prompt: gs.aiPrompt || null,
+      provider: Ai.describeAiSetup(this.settings),
+    };
+  }
+
+  setAiChatState(chatId, body = {}) {
+    const groupId = String(chatId);
+    if (!this.settings.groupSettings) this.settings.groupSettings = {};
+    const current = this.settings.groupSettings[groupId] || { replyEnabled: false };
+    const next = { ...current };
+    if (typeof body.enabled === 'boolean') {
+      next.aiEnabled = body.enabled;
+    }
+    if (body.prompt === null || body.prompt === '') {
+      delete next.aiPrompt;
+    } else if (typeof body.prompt === 'string' && body.prompt.trim()) {
+      next.aiPrompt = body.prompt.trim();
+    }
+    this.settings.groupSettings[groupId] = next;
+    Utils.saveSettings(this.settings);
+    if (body.enabled === false) {
+      this.aiHistory.clear(groupId);
+    }
+    return this.getAiChatState(groupId);
+  }
+
+  async handleAiCommand(args, chatId, messageId) {
+    const setup = Ai.describeAiSetup(this.settings);
+
+    if (!args.length) {
+      const state = this.getAiChatState(chatId);
+      await this.sendReply(
+        chatId,
+        messageId,
+        [
+          `🧠 AI chat (chat này): ${state.enabled ? '🟢 BẬT' : '🔴 TẮT'}`,
+          `Provider: ${setup.label}/${setup.model} (${setup.configured ? 'có key' : 'chưa key'})`,
+          state.prompt ? `Prompt riêng: có (${state.prompt.length} ký tự)` : 'Prompt riêng: không',
+          '',
+          'Dùng: /ai on | /ai off | /ai prompt ... | /ai provider openai|claude|grok',
+          'Mặc định TẮT — chỉ chat đã /ai on mới được AI trả lời.',
+        ].join('\n')
+      );
+      return;
+    }
+
+    const action = String(args[0] || '').toLowerCase();
+
+    if (action === 'on' || action === 'off') {
+      let targetChat = String(chatId);
+      if (args[1] && /^-?\d+$/.test(String(args[1]))) {
+        targetChat = String(args[1]);
+      }
+      if (action === 'on' && !setup.configured) {
+        await this.sendReply(
+          chatId,
+          messageId,
+          `❌ Chưa có API key cho ${setup.label}. Đặt key trong .env rồi restart bot.`
+        );
+        return;
+      }
+      const state = this.setAiChatState(targetChat, { enabled: action === 'on' });
+      const same = targetChat === String(chatId);
+      await this.sendReply(
+        chatId,
+        messageId,
+        action === 'on'
+          ? `✅ Đã BẬT AI chat cho ${same ? 'chat này' : `\`${targetChat}\``}`
+          : `❌ Đã TẮT AI chat cho ${same ? 'chat này' : `\`${targetChat}\``}`
+      );
+      Utils.log(`🧠 /ai ${action} chat ${targetChat} → enabled=${state.enabled}`);
+      return;
+    }
+
+    if (action === 'prompt') {
+      const rest = args.slice(1).join(' ').trim();
+      if (!rest) {
+        const state = this.getAiChatState(chatId);
+        await this.sendReply(
+          chatId,
+          messageId,
+          state.prompt
+            ? `🧠 Prompt chat này:\n${state.prompt}`
+            : '🧠 Chưa có prompt riêng. Dùng: /ai prompt [nội dung] hoặc /ai prompt clear'
+        );
+        return;
+      }
+      if (rest.toLowerCase() === 'clear' || rest.toLowerCase() === 'off') {
+        this.setAiChatState(chatId, { prompt: null });
+        await this.sendReply(chatId, messageId, '✅ Đã xóa prompt riêng của chat này');
+        return;
+      }
+      this.setAiChatState(chatId, { prompt: rest });
+      await this.sendReply(chatId, messageId, '✅ Đã lưu prompt riêng cho chat này');
+      return;
+    }
+
+    if (action === 'clear' || action === 'reset') {
+      this.aiHistory.clear(chatId);
+      await this.sendReply(chatId, messageId, '✅ Đã xóa lịch sử hội thoại AI (RAM) của chat này');
+      return;
+    }
+
+    if (action === 'provider') {
+      const provider = Ai.normalizeProvider(args[1]);
+      if (!provider) {
+        await this.sendReply(
+          chatId,
+          messageId,
+          '❗ Dùng: /ai provider openai | claude | grok'
+        );
+        return;
+      }
+      this.settings.aiProvider = provider;
+      Utils.saveSettings(this.settings);
+      const next = Ai.describeAiSetup(this.settings);
+      await this.sendReply(
+        chatId,
+        messageId,
+        `✅ Provider → ${next.label}/${next.model} (${next.configured ? 'có key' : '⚠️ chưa key'})`
+      );
+      return;
+    }
+
+    if (action === 'model') {
+      const model = args.slice(1).join(' ').trim();
+      if (!model) {
+        await this.sendReply(chatId, messageId, '❗ Dùng: /ai model [tên-model]');
+        return;
+      }
+      if (model.toLowerCase() === 'clear' || model.toLowerCase() === 'default') {
+        this.settings.aiModel = null;
+      } else {
+        this.settings.aiModel = model;
+      }
+      Utils.saveSettings(this.settings);
+      const next = Ai.describeAiSetup(this.settings);
+      await this.sendReply(chatId, messageId, `✅ Model → ${next.model}`);
+      return;
+    }
+
+    await this.sendReply(
+      chatId,
+      messageId,
+      '❗ /ai | /ai on|off [chatId] | /ai prompt ... | /ai clear | /ai provider ... | /ai model ...'
+    );
+  }
+
+  getClaudeCodePilotState(chatId) {
+    const gs = this.getGroupSettings(chatId);
+    const setup = ClaudeCode.describeSetup();
+    return {
+      enabled: gs.claudeCodePilot === true,
+      setup,
+    };
+  }
+
+  setClaudeCodePilot(chatId, enabled) {
+    const groupId = String(chatId);
+    if (!this.settings.groupSettings) this.settings.groupSettings = {};
+    const current = this.settings.groupSettings[groupId] || { replyEnabled: false };
+    const next = { ...current, claudeCodePilot: enabled === true };
+    if (!enabled) delete next.claudeCodePilot;
+    this.settings.groupSettings[groupId] = next;
+    Utils.saveSettings(this.settings);
+    return this.getClaudeCodePilotState(groupId);
+  }
+
+  async handleClaudeCodeCommand(args, chatId, messageId) {
+    const setup = ClaudeCode.describeSetup();
+    const state = this.getClaudeCodePilotState(chatId);
+
+    if (!args.length) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        [
+          `🦞 Claude Code pilot (chat này): ${state.enabled ? '🟢 BẬT' : '🔴 TẮT'}`,
+          `Binary: ${setup.binaryOk ? setup.bin : '⚠️ chưa tìm thấy claude'}`,
+          `Timeout: ${Math.round(setup.timeoutMs / 1000)}s`,
+          '',
+          'Trên iPhone: nhắn Telegram với userbot này (DM admin).',
+          '/cc on — bật: mọi tin tiếp theo của bạn → Claude Code trên VPS',
+          '/cc off — tắt',
+          '/cc <yêu cầu> — hỏi Claude Code một lần (vd: /cc liệt kê chats rồi gửi xin chào cho id …)',
+          '',
+          'App Claude trên iPhone không gắn trực tiếp session VPS — dùng Telegram.',
+          'VPS cần: claude auth login (một lần).',
+        ].join('\n')
+      );
+      return;
+    }
+
+    const action = String(args[0] || '').toLowerCase();
+    if (action === 'on' || action === 'off') {
+      if (action === 'on' && !setup.enabled) {
+        await this.sendReply(chatId, messageId, '❌ Claude Code pilot bị tắt (CLAUDE_CODE_ENABLED=0)');
+        return;
+      }
+      this.setClaudeCodePilot(chatId, action === 'on');
+      await this.sendReply(
+        chatId,
+        messageId,
+        action === 'on'
+          ? '✅ Đã BẬT Claude Code pilot cho chat này.\nTừ giờ chỉ cần nhắn bình thường — không cần /cc.\nGõ /cc off để tắt.'
+          : '❌ Đã TẮT Claude Code pilot cho chat này.\nTin thường không còn gửi tới Claude Code.'
+      );
+      Utils.log(`🦞 /cc ${action} chat ${chatId}`);
+      return;
+    }
+
+    if (action === 'status') {
+      await this.handleClaudeCodeCommand([], chatId, messageId);
+      return;
+    }
+
+    const prompt = args.join(' ').trim();
+    await this.runClaudeCodeAndReply(chatId, messageId, prompt, { continueSession: true });
+  }
+
+  async handleClaudeCodePilotMessage(message, messageText) {
+    const chatId = message.chatId;
+    const messageId = message.id;
+    await this.runClaudeCodeAndReply(chatId, messageId, messageText, {
+      continueSession: true,
+    });
+  }
+
+  async runClaudeCodeAndReply(chatId, messageId, prompt, { continueSession = true } = {}) {
+    const chatKey = String(chatId);
+    if (this.claudeCodeBusy || this.claudeCodeBusyChats.has(chatKey)) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '⏳ Claude Code đang xử lý tin trước — gửi lại sau.'
+      );
+      return;
+    }
+
+    this.claudeCodeBusy = true;
+    this.claudeCodeBusyChats.add(chatKey);
+    try {
+      await this.sendReply(chatId, messageId, '🦞 Đang nhờ Claude Code trên VPS…');
+      const result = await ClaudeCode.runPrompt({
+        prompt,
+        cwd: process.cwd(),
+        continueSession,
+      });
+      if (result.ok && result.text) {
+        const text =
+          result.text.length > 3500
+            ? `${result.text.slice(0, 3490)}\n…(cắt)`
+            : result.text;
+        await this.sendReply(chatId, messageId, text);
+        Utils.log(`🦞 Claude Code OK chat ${chatKey} (${result.text.length} chars)`);
+        return;
+      }
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Claude Code: ${result.error || 'không có output'}`
+      );
+      Utils.log(`🦞 Claude Code FAIL chat ${chatKey}: ${result.error}`);
+    } catch (err) {
+      await this.sendReply(chatId, messageId, `❌ Claude Code lỗi: ${err.message}`);
+      Utils.log(`🦞 Claude Code exception: ${err.message}`);
+    } finally {
+      this.claudeCodeBusy = false;
+      this.claudeCodeBusyChats.delete(chatKey);
+      this.claudeCodeSuppressOutUntil.set(chatKey, Date.now() + 8000);
+    }
+  }
+
+  async handleAiChatMessage(message, messageText, groupSettings) {
+    const chatId = message.chatId;
+    const chatKey = String(chatId);
+    if (this.aiBusyChats.has(chatKey)) {
+      Utils.log(`⏳ AI đang trả lời chat ${chatKey}, bỏ qua tin mới`);
+      return;
+    }
+
+    const setup = Ai.describeAiSetup(this.settings);
+    if (!setup.configured) {
+      Utils.log(`⚠️ AI bật nhưng chưa có key (${setup.label}) — chat ${chatKey}`);
+      return;
+    }
+
+    this.aiBusyChats.add(chatKey);
+    try {
+      const history = this.aiHistory.get(chatKey);
+      const system =
+        (groupSettings && groupSettings.aiPrompt) ||
+        config.aiSystemPrompt;
+
+      const replyText = await Ai.chatCompletion({
+        settings: this.settings,
+        system,
+        messages: [...history, { role: 'user', content: messageText }],
+      });
+
+      this.aiHistory.push(chatKey, 'user', messageText);
+      this.aiHistory.push(chatKey, 'assistant', replyText);
+
+      const chunks = Utils.splitTelegramMessageChunks(replyText, 4000);
+      for (let i = 0; i < chunks.length; i++) {
+        await this.client.sendMessage(chatId, {
+          message: chunks[i],
+          ...(i === 0 ? { replyTo: message.id } : {}),
+        });
+      }
+      Utils.log(`🧠 AI đã reply chat ${chatKey} (${replyText.length} ký tự)`);
+    } catch (error) {
+      Utils.log(`❌ AI reply lỗi chat ${chatKey}: ${error.message}`);
+      try {
+        await this.sendReply(
+          chatId,
+          message.id,
+          `⚠️ AI lỗi: ${error.message}`.slice(0, 500)
+        );
+      } catch (_) {
+        /* ignore */
+      }
+    } finally {
+      this.aiBusyChats.delete(chatKey);
+    }
+  }
+
+  async listControlChats(limit = 100) {
+    const dialogs = await this.client.getDialogs({ limit });
+    return dialogs.map((dialog) => {
+      const entity = dialog.entity;
+      const className = entity?.className || '';
+      let id = entity?.id?.toString?.() || String(entity?.id || '');
+      if (className === 'Channel') id = `-100${id}`;
+      else if (className === 'Chat') id = `-${id}`;
+      const gs = this.getGroupSettings(id);
+      return {
+        id,
+        title: entity?.title || entity?.firstName || dialog.name || null,
+        username: entity?.username || null,
+        type: className || 'unknown',
+        aiEnabled: gs.aiEnabled === true,
+        replyEnabled: gs.replyEnabled === true,
+      };
+    });
+  }
+
+  async resolveControlPeer(chatId) {
+    const s = String(chatId).trim();
+    if (/^-?\d+$/.test(s)) {
+      try {
+        return await this.client.getEntity(BigInt(s));
+      } catch (_) {
+        return await this.client.getEntity(s);
+      }
+    }
+    return await this.client.getEntity(s);
+  }
+
+  async getControlMessages(chatId, limit = 30) {
+    const peer = await this.resolveControlPeer(chatId);
+    const msgs = await this.client.getMessages(peer, { limit });
+    return (msgs || []).map((m) => ({
+      id: m.id,
+      date: m.date,
+      out: Boolean(m.out),
+      text: m.message || m.text || '',
+      senderId: m.senderId?.toString?.() || null,
+    }));
+  }
+
+  async controlSendMessage(chatId, text, replyTo = null) {
+    const peer = await this.resolveControlPeer(chatId);
+    const sent = await this.client.sendMessage(peer, {
+      message: String(text),
+      ...(replyTo ? { replyTo: Number(replyTo) } : {}),
+    });
+    return {
+      chatId: String(chatId),
+      messageId: sent?.id ?? null,
+    };
+  }
+
+  async controlRunCommand(chatId, text) {
+    const cmd = String(text || '').trim();
+    if (!cmd.startsWith('/')) {
+      throw new Error('text must start with /');
+    }
+    const ownerId = this.me?.id != null ? String(this.me.id) : '';
+    // Đảm bảo tài khoản userbot được coi là admin khi điều khiển qua API
+    if (ownerId && !Utils.isAdmin(this.settings, ownerId)) {
+      Utils.addAdmin(this.settings, ownerId);
+      Utils.saveSettings(this.settings);
+    }
+    const fakeMessage = {
+      senderId: ownerId || this.me?.id,
+      chatId,
+      id: 0,
+      out: true,
+      message: cmd,
+      text: cmd,
+    };
+    await this.handleCommand(cmd, chatId, 0, fakeMessage);
+    return { chatId: String(chatId), command: cmd };
+  }
+
   // Helper để send reply
   async sendReply(chatId, messageId, text) {
     try {
@@ -4172,14 +4787,17 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       this.setupEventHandlers();
 
       // Get thông tin user
-      const me = await this.client.getMe();
-      Utils.log(`👤 Đăng nhập như: ${me.firstName} ${me.lastName || ''} (@${me.username || 'no_username'})`);
+      this.me = await this.client.getMe();
+      Utils.log(`👤 Đăng nhập như: ${this.me.firstName} ${this.me.lastName || ''} (@${this.me.username || 'no_username'})`);
 
       this.isRunning = true;
       Utils.log('✅ UserBot đã sẵn sàng hoạt động!');
       Utils.log('📝 Admin: gõ /help2 để xem hướng dẫn đầy đủ');
       Utils.log(`🔄 Duplicate protection: ACTIVE`);
       Utils.log(`📊 Process ID: ${process.pid}`);
+
+      this.controlServer = createControlServer(this);
+      await this.controlServer.start();
 
       // Keep alive
       while (this.isRunning) {
@@ -4197,6 +4815,9 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
   stop() {
     Utils.log('🛑 Đang dừng bot...');
     this.isRunning = false;
+    if (this.controlServer) {
+      this.controlServer.stop().catch(() => {});
+    }
     if (this.client) {
       this.client.disconnect();
     }

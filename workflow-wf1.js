@@ -1,0 +1,736 @@
+/**
+ * Workflow WF1 — điều khiển bot Telegram khác qua inline/reply keyboard.
+ *
+ * Cấu hình: /wfbot @bot|chatId
+ * Chạy: /wf1 on  (trong chat điều khiển)
+ *
+ * Luồng:
+ * 1) /start → bấm button đầu → button thứ 2 → "tài khoản còn hạn"
+ * 2) Liệt kê button tài khoản → user chọn
+ * 3) "chỉnh sửa giao dịch" → "chỉnh giao dịch"
+ * 4) Lặp từng giao dịch: so sánh thời gian trong Nội dung vs mục thời gian;
+ *    trùng → bỏ qua; khác → chỉnh thời gian theo Nội dung; báo cáo về chat.
+ */
+
+const { Api } = require('telegram');
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const BTN = {
+  accountValid: /t[aà]i\s*kho[aả]n\s*c[oò]n\s*h[aạ]n/i,
+  // Một số bot: "Chỉnh sửa giao dịch"; bot này: "✏️ Chỉnh Giao Dịch"
+  editTxMenu: /ch[iỉ]nh\s*s[uử]a\s*giao\s*d[iị]ch/i,
+  editTx: /ch[iỉ]nh\s*giao\s*d[iị]ch/i,
+  editTime: /th[oờ]i\s*gian|ch[iỉ]nh.*gi[oờ]|s[uử]a.*th[oờ]i/i,
+  back: /quay\s*l[aạ]i|back|tr[oờ]|h[uủ]y|cancel|«|‹|⬅️/i,
+  // Button sang loạt giao dịch tiếp theo
+  nextPage:
+    /ti[eế]p(\s*theo)?|next|sau|trang\s*sau|»|›|➡️|xem\s*th[eê]m|giao\s*d[iị]ch\s*ti[eế]p/i,
+};
+
+/**
+ * Formats trong Nội dung / Thời gian:
+ * - Compact: 151126-18:34:26 → DDMMYY + giờ (15/11/2026 18:34) — không dùng giây khi chỉnh
+ * - Thường: 15/11/2026 18:34:26 hoặc 15/11/2026 18:34
+ */
+const DT_SLASH_RE =
+  /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})[,\s]+(\d{1,2}:\d{2}(?::\d{2})?)/;
+/** DDMMYY-HH:mm[:ss] ví dụ 151126-18:34:26 */
+const DT_COMPACT_RE = /(\d{2})(\d{2})(\d{2})-(\d{1,2}:\d{2}(?::\d{2})?)/;
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/** Chuẩn hóa để so sánh / gửi chỉnh sửa — không có giây */
+function formatEditTime(day, month, year, hh, mm) {
+  return `${pad2(day)}/${pad2(month)}/${year} ${pad2(hh)}:${pad2(mm)}`;
+}
+
+function parseTimePart(timePart) {
+  const [hh, mm, ss] = String(timePart).split(':');
+  return {
+    hh: parseInt(hh, 10),
+    mm: parseInt(mm, 10),
+    ss: ss != null ? parseInt(ss, 10) : 0,
+  };
+}
+
+function parseSlashDateTime(datePart, timePart) {
+  const d = datePart.replace(/[.\-]/g, '/');
+  const [a, b, c] = d.split('/');
+  let day;
+  let month;
+  let year;
+  if (String(c).length === 4) {
+    day = parseInt(a, 10);
+    month = parseInt(b, 10);
+    year = c;
+  } else if (String(a).length === 4) {
+    year = a;
+    month = parseInt(b, 10);
+    day = parseInt(c, 10);
+  } else {
+    day = parseInt(a, 10);
+    month = parseInt(b, 10);
+    year = c.length === 2 ? `20${c}` : c;
+  }
+  const t = parseTimePart(timePart);
+  return formatEditTime(day, month, year, t.hh, t.mm);
+}
+
+/** 151126-18:34:26 → DD=15 MM=11 YY=26 → 15/11/2026 18:34 */
+function parseCompactDateTime(match) {
+  const day = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const yy = match[3];
+  const year = yy.length === 2 ? `20${yy}` : yy;
+  const t = parseTimePart(match[4]);
+  return formatEditTime(day, month, year, t.hh, t.mm);
+}
+
+function parseAnyDateTimeInChunk(chunk) {
+  const raw = String(chunk || '');
+  const compact = raw.match(DT_COMPACT_RE);
+  if (compact) return parseCompactDateTime(compact);
+  const slash = raw.match(DT_SLASH_RE);
+  if (slash) return parseSlashDateTime(slash[1], slash[2]);
+  return null;
+}
+
+function extractDateTimeFromText(text, labelRe) {
+  const raw = String(text || '');
+  if (labelRe) {
+    const m = raw.match(labelRe);
+    if (m) {
+      const chunk = m[1] || m[0];
+      const parsed = parseAnyDateTimeInChunk(chunk);
+      if (parsed) return parsed;
+    }
+  }
+  // Ưu tiên compact trong toàn bộ text
+  const compactAll = [...raw.matchAll(new RegExp(DT_COMPACT_RE.source, 'g'))];
+  if (compactAll.length) return parseCompactDateTime(compactAll[0]);
+  const slashAll = [...raw.matchAll(new RegExp(DT_SLASH_RE.source, 'g'))];
+  if (slashAll.length) return parseSlashDateTime(slashAll[0][1], slashAll[0][2]);
+  return null;
+}
+
+function extractContentTime(text) {
+  return (
+    extractDateTimeFromText(
+      text,
+      /n[oộ]i\s*dung\s*:\s*([^\n]+)/i
+    ) || extractDateTimeFromText(text, null)
+  );
+}
+
+function extractFieldTime(text) {
+  return extractDateTimeFromText(
+    text,
+    /th[oờ]i\s*gian\s*:\s*([^\n]+)/i
+  );
+}
+
+/** Lấy raw text sau "Thời gian:" để biết còn giây hay không */
+function extractFieldTimeRaw(text) {
+  const m = String(text || '').match(/th[oờ]i\s*gian\s*:\s*([^\n]+)/i);
+  return m ? String(m[1]).trim() : '';
+}
+
+/**
+ * Mục Thời gian còn giây? (18:34:26 hoặc ...-18:34:26)
+ * → vẫn phải chỉnh dù ngày/giờ-phút đã khớp Nội dung.
+ */
+function fieldTimeHasSeconds(rawField) {
+  const raw = String(rawField || '');
+  if (/\d{1,2}:\d{2}:\d{2}/.test(raw)) return true;
+  return false;
+}
+
+/** true = đã đúng format cuối (khớp Nội dung và không còn giây) → bỏ qua */
+function shouldSkipTimeEdit(contentTime, fieldTime, rawField) {
+  if (!contentTime || !fieldTime) return false;
+  if (fieldTimeHasSeconds(rawField)) return false;
+  return fieldTime === contentTime;
+}
+
+function flattenButtons(rows) {
+  if (!rows) return [];
+  const out = [];
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const b = row[c];
+      const text = b?.text || b?.button?.text || '';
+      if (text) out.push({ row: r, col: c, text: String(text), button: b });
+    }
+  }
+  return out;
+}
+
+function findButton(flat, predicate) {
+  if (typeof predicate === 'number') return flat[predicate] || null;
+  if (predicate instanceof RegExp) {
+    return flat.find((b) => predicate.test(b.text)) || null;
+  }
+  const q = String(predicate).toLowerCase();
+  return (
+    flat.find((b) => b.text.toLowerCase() === q) ||
+    flat.find((b) => b.text.toLowerCase().includes(q)) ||
+    null
+  );
+}
+
+class Wf1Runner {
+  constructor(bot) {
+    this.bot = bot;
+    this.sessions = new Map(); // controlChatId → session
+  }
+
+  getSettings() {
+    if (!this.bot.settings.workflow) {
+      this.bot.settings.workflow = {};
+    }
+    return this.bot.settings.workflow;
+  }
+
+  getBotPeerConfig() {
+    return String(this.getSettings().wfBotPeer || '').trim();
+  }
+
+  setBotPeerConfig(peer) {
+    const wf = this.getSettings();
+    wf.wfBotPeer = String(peer || '').trim();
+    const Utils = require('./utils');
+    Utils.saveSettings(this.bot.settings);
+  }
+
+  getSession(controlChatId) {
+    return this.sessions.get(String(controlChatId));
+  }
+
+  clearSession(controlChatId) {
+    this.sessions.delete(String(controlChatId));
+  }
+
+  isAwaitingUserInput(controlChatId) {
+    const s = this.getSession(controlChatId);
+    return s && s.phase === 'await_account';
+  }
+
+  async resolvePeer(peerStr) {
+    const raw = String(peerStr || '').trim();
+    if (!raw) throw new Error('Chưa cấu hình bot — dùng /wfbot @bot hoặc chat id');
+    let target = raw;
+    if (target.startsWith('@')) target = target.slice(1);
+    if (/^-?\d+$/.test(target)) {
+      return await this.bot.client.getEntity(Number(target));
+    }
+    return await this.bot.client.getEntity(target);
+  }
+
+  async notify(controlChatId, text, replyTo = null) {
+    try {
+      await this.bot.client.sendMessage(controlChatId, {
+        message: text,
+        replyTo: replyTo || undefined,
+      });
+    } catch (e) {
+      const Utils = require('./utils');
+      Utils.log(`⚠️ WF1 notify: ${e.message}`);
+    }
+  }
+
+  async getLatestMessage(peer) {
+    const msgs = await this.bot.client.getMessages(peer, { limit: 8 });
+    return msgs && msgs[0] ? msgs[0] : null;
+  }
+
+  async getButtons(msg) {
+    if (!msg) return [];
+    const rows = await msg.getButtons();
+    return flattenButtons(rows);
+  }
+
+  async clickButton(msg, target, peer) {
+    const flat = await this.getButtons(msg);
+    const btn = findButton(flat, target);
+    if (!btn) {
+      const labels = flat.map((b, i) => `${i + 1}. ${b.text}`).join('\n') || '(không có)';
+      throw new Error(`Không tìm thấy button.\nHiện có:\n${labels}`);
+    }
+    await msg.click({ i: btn.row, j: btn.col });
+    await sleep(1800);
+    return this.getLatestMessage(peer);
+  }
+
+  async clickIndex(msg, index, peer) {
+    return this.clickButton(msg, index, peer);
+  }
+
+  /**
+   * /wfbot [@user|id]
+   */
+  async handleWfBotCommand(args, chatId, messageId) {
+    if (!args.length) {
+      const cur = this.getBotPeerConfig() || '(chưa đặt)';
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        [
+          `🤖 WF bot hiện tại: \`${cur}\``,
+          '',
+          'Đặt bot: `/wfbot @tenbot` hoặc `/wfbot <chatId>`',
+        ].join('\n')
+      );
+      return;
+    }
+    const peer = args.join(' ').trim();
+    try {
+      const entity = await this.resolvePeer(peer);
+      const label =
+        entity.username
+          ? `@${entity.username}`
+          : `${entity.firstName || entity.title || ''}`.trim() || peer;
+      const id = entity.id != null ? String(entity.id) : peer;
+      // Prefer username if available for stability
+      const store = entity.username ? `@${entity.username}` : id;
+      this.setBotPeerConfig(store);
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        `✅ Đã đặt WF bot: ${label} (\`${store}\` / id \`${id}\`)`
+      );
+    } catch (e) {
+      await this.bot.sendReply(chatId, messageId, `❌ Không resolve được bot: ${e.message}`);
+    }
+  }
+
+  /**
+   * /wf1 on|off|status|help
+   */
+  async handleWf1Command(args, chatId, messageId) {
+    const action = String(args[0] || 'help').toLowerCase();
+    if (action === 'off' || action === 'stop' || action === 'cancel') {
+      this.clearSession(chatId);
+      await this.bot.sendReply(chatId, messageId, '🛑 Đã tắt / hủy WF1.');
+      return;
+    }
+    if (action === 'status') {
+      const s = this.getSession(chatId);
+      const bot = this.getBotPeerConfig() || '(chưa đặt)';
+      await this.bot.sendReply(
+        chatId,
+        messageId,
+        [
+          `WF1: ${s ? `🟢 ${s.phase}` : '🔴 idle'}`,
+          `Bot: \`${bot}\``,
+          s?.stats
+            ? `Đã sửa: ${s.stats.fixed} · Bỏ qua: ${s.stats.skipped} · Lỗi: ${s.stats.errors}`
+            : '',
+        ]
+          .filter(Boolean)
+          .join('\n')
+      );
+      return;
+    }
+    if (action === 'on' || action === 'start' || action === 'run') {
+      if (this.getSession(chatId)?.phase === 'processing') {
+        await this.bot.sendReply(chatId, messageId, '⏳ WF1 đang chạy — /wf1 off để hủy.');
+        return;
+      }
+      if (!this.getBotPeerConfig()) {
+        await this.bot.sendReply(
+          chatId,
+          messageId,
+          '❌ Chưa đặt bot. Dùng: `/wfbot @bot` hoặc `/wfbot <chatId>` rồi `/wf1 on`.'
+        );
+        return;
+      }
+      await this.bot.sendReply(chatId, messageId, '🚀 Bắt đầu WF1…');
+      // fire-and-forget async run
+      this.runUntilAccountPick(chatId, messageId).catch(async (err) => {
+        this.clearSession(chatId);
+        await this.notify(chatId, `❌ WF1 lỗi: ${err.message}`, messageId);
+      });
+      return;
+    }
+
+    await this.bot.sendReply(
+      chatId,
+      messageId,
+      [
+        '**WF1** — tự động thao tác bot khác',
+        '',
+        '`/wfbot @bot` — đặt bot sẽ điều khiển',
+        '`/wf1 on` — chạy: /start → button 1 → button 2 → tài khoản còn hạn → chờ bạn chọn account',
+        'Sau khi chọn account: chỉnh sửa giao dịch → chỉnh giao dịch → sửa thời gian từng GD',
+        '`/wf1 off` — hủy',
+        '`/wf1 status`',
+      ].join('\n')
+    );
+  }
+
+  async runUntilAccountPick(controlChatId, replyTo) {
+    const peerCfg = this.getBotPeerConfig();
+    const peer = await this.resolvePeer(peerCfg);
+    this.sessions.set(String(controlChatId), {
+      phase: 'processing',
+      peerCfg,
+      peer,
+      controlChatId: String(controlChatId),
+      replyTo,
+      stats: { fixed: 0, skipped: 0, errors: 0 },
+      accountButtons: [],
+    });
+
+    await this.notify(controlChatId, `📤 Gửi /start tới ${peerCfg}…`, replyTo);
+    await this.bot.client.sendMessage(peer, { message: '/start' });
+    await sleep(2000);
+    let msg = await this.getLatestMessage(peer);
+    if (!msg) throw new Error('Không nhận được tin từ bot sau /start');
+
+    await this.notify(controlChatId, '👆 Bấm button đầu tiên…', replyTo);
+    msg = await this.clickIndex(msg, 0, peer);
+
+    await this.notify(controlChatId, '👆 Bấm button thứ 2…', replyTo);
+    msg = await this.clickIndex(msg, 1, peer);
+
+    await this.notify(controlChatId, '👆 Chọn “tài khoản còn hạn”…', replyTo);
+    msg = await this.clickButton(msg, BTN.accountValid, peer);
+
+    const flat = await this.getButtons(msg);
+    if (!flat.length) throw new Error('Không thấy danh sách button tài khoản');
+
+    const session = this.getSession(controlChatId);
+    session.phase = 'await_account';
+    session.botMsgId = msg.id;
+    session.accountButtons = flat.map((b, i) => ({
+      index: i,
+      text: b.text,
+      row: b.row,
+      col: b.col,
+    }));
+    session.lastMsg = msg;
+
+    const list = session.accountButtons
+      .map((b) => `${b.index + 1}. ${b.text}`)
+      .join('\n');
+    await this.notify(
+      controlChatId,
+      [
+        '📋 Chọn tài khoản (reply số hoặc tên button):',
+        list,
+        '',
+        'Ví dụ: `1` hoặc dán đúng tên button.',
+        'Hủy: /wf1 off',
+      ].join('\n'),
+      replyTo
+    );
+  }
+
+  /**
+   * User chọn account trong chat điều khiển.
+   * @returns {boolean} true nếu đã xử lý
+   */
+  async handleUserAccountPick(controlChatId, messageText, messageId) {
+    const session = this.getSession(controlChatId);
+    if (!session || session.phase !== 'await_account') return false;
+
+    const text = String(messageText || '').trim();
+    if (!text || text.startsWith('/')) return false;
+
+    let pick = null;
+    if (/^\d+$/.test(text)) {
+      const n = parseInt(text, 10) - 1;
+      pick = session.accountButtons[n];
+    } else {
+      const q = text.toLowerCase();
+      pick =
+        session.accountButtons.find((b) => b.text.toLowerCase() === q) ||
+        session.accountButtons.find((b) => b.text.toLowerCase().includes(q));
+    }
+    if (!pick) {
+      await this.notify(
+        controlChatId,
+        '❗ Không khớp button. Gửi số thứ tự hoặc tên button trong danh sách.',
+        messageId
+      );
+      return true;
+    }
+
+    session.phase = 'processing';
+    session.chosenAccount = pick.text;
+    await this.notify(
+      controlChatId,
+      `✅ Đã chọn: ${pick.text}\nTiếp tục chỉnh giao dịch…`,
+      messageId
+    );
+
+    this.continueAfterAccount(controlChatId).catch(async (err) => {
+      this.clearSession(controlChatId);
+      await this.notify(controlChatId, `❌ WF1 lỗi: ${err.message}`, messageId);
+    });
+    return true;
+  }
+
+  async continueAfterAccount(controlChatId) {
+    const session = this.getSession(controlChatId);
+    if (!session) return;
+    const { peer, replyTo } = session;
+
+    let msg = session.lastMsg || (await this.getLatestMessage(peer));
+    // Click account button
+    msg = await this.clickButton(msg, session.chosenAccount, peer);
+
+    // Có bot có 2 bước (menu rồi chỉnh); bot test chỉ có "✏️ Chỉnh Giao Dịch"
+    const flatAfterAccount = await this.getButtons(msg);
+    if (findButton(flatAfterAccount, BTN.editTxMenu)) {
+      await this.notify(controlChatId, '👆 Chỉnh sửa giao dịch…', replyTo);
+      msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+    }
+
+    await this.notify(controlChatId, '👆 Chỉnh giao dịch…', replyTo);
+    msg = await this.clickButton(msg, BTN.editTx, peer);
+
+    await this.processTransactionLoop(controlChatId, msg);
+  }
+
+  isLikelyTransactionButton(text) {
+    const t = String(text || '');
+    if (BTN.back.test(t) || BTN.nextPage.test(t)) return false;
+    if (BTN.editTxMenu.test(t) || BTN.editTx.test(t)) return false;
+    if (BTN.accountValid.test(t)) return false;
+    // Menu chỉnh GD — không phải dòng giao dịch
+    if (/t[aạ]o\s*giao\s*d[iị]ch/i.test(t)) return false;
+    if (/lo[aạ]i\s*giao\s*d[iị]ch/i.test(t)) return false;
+    if (/s[uử]a\s*s[oố]\s*ti[eề]n|s[oố]\s*ti[eề]n/i.test(t)) return false;
+    if (/c[oộ]ng\s*ti[eề]n|tr[uừ]\s*ti[eề]n/i.test(t)) return false;
+    if (/n[oộ]i\s*dung|ghi\s*ch[uú]/i.test(t) && !DT_COMPACT_RE.test(t)) return false;
+    // Ưu tiên dòng có compact time / ngày giờ
+    if (DT_COMPACT_RE.test(t) || DT_SLASH_RE.test(t)) return true;
+    // Còn lại: button không phải menu đã lọc
+    return true;
+  }
+
+  /**
+   * Sau chỉnh thời gian: chờ tin mới → Quay lại → Quay lại → về list GD.
+   * Sau bỏ qua/mở nhầm: Quay lại tối đa 2 lần cho đến khi thấy list hoặc next.
+   */
+  async returnToTransactionList(msg, peer, { afterEdit = false } = {}) {
+    if (afterEdit) {
+      await sleep(2500);
+      msg = (await this.getLatestMessage(peer)) || msg;
+    }
+    for (let i = 0; i < 2; i++) {
+      const flat = await this.getButtons(msg);
+      const txLike = flat.filter((b) => this.isLikelyTransactionButton(b.text));
+      const hasNext = !!findButton(flat, BTN.nextPage);
+      // Đã về list (có GD hoặc nút trang sau) và không chỉ còn Quay lại
+      if (txLike.length > 0 || (hasNext && i > 0)) {
+        break;
+      }
+      if (!findButton(flat, BTN.back)) {
+        await sleep(800);
+        msg = (await this.getLatestMessage(peer)) || msg;
+        continue;
+      }
+      await sleep(afterEdit ? 1200 : 800);
+      msg = await this.clickButton(msg, BTN.back, peer);
+    }
+    await sleep(800);
+    return (await this.getLatestMessage(peer)) || msg;
+  }
+
+  async processTransactionLoop(controlChatId, listMsg) {
+    const session = this.getSession(controlChatId);
+    if (!session) return;
+    const { peer, replyTo } = session;
+    let msg = listMsg;
+    let pass = 0;
+    const maxPass = 15;
+
+    while (pass < maxPass) {
+      pass += 1;
+      if (!this.getSession(controlChatId)) {
+        await this.notify(controlChatId, '🛑 WF1 đã hủy.', replyTo);
+        return;
+      }
+
+      let flat = await this.getButtons(msg);
+      let txButtons = flat.filter((b) => this.isLikelyTransactionButton(b.text));
+      if (!txButtons.length) {
+        const next = findButton(flat, BTN.nextPage);
+        if (next) {
+          msg = await this.clickButton(msg, BTN.nextPage, peer);
+          continue;
+        }
+        break;
+      }
+
+      await this.notify(
+        controlChatId,
+        `📄 Lượt ${pass}: ${txButtons.length} button giao dịch — quét…`,
+        replyTo
+      );
+
+      let fixedThisPass = 0;
+      // Snapshot texts — list may change after edits
+      const labels = txButtons.map((b) => b.text);
+
+      for (const label of labels) {
+        if (!this.getSession(controlChatId)) return;
+
+        // Refresh list message buttons each time
+        flat = await this.getButtons(msg);
+        if (!findButton(flat, label)) {
+          continue;
+        }
+
+        await this.notify(
+          controlChatId,
+          `🔎 Mở: ${label.slice(0, 100)}`,
+          replyTo
+        );
+        let detail = await this.clickButton(msg, label, peer);
+        const body = String(detail?.message || detail?.text || '');
+        const contentTime = extractContentTime(body);
+        const fieldTime = extractFieldTime(body);
+        const rawField = extractFieldTimeRaw(body);
+
+        if (!contentTime) {
+          session.stats.errors += 1;
+          await this.notify(
+            controlChatId,
+            `⚠️ Không parse được thời gian Nội dung — bỏ qua (có thể không phải dòng GD).\n${body.slice(0, 350)}`,
+            replyTo
+          );
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: false,
+          });
+          continue;
+        }
+
+        // Chỉ bỏ qua khi đã khớp Nội dung VÀ mục Thời gian không còn giây
+        if (shouldSkipTimeEdit(contentTime, fieldTime, rawField)) {
+          session.stats.skipped += 1;
+          await this.notify(
+            controlChatId,
+            `⏭️ Đã đúng (${contentTime}, không giây) — bỏ qua.`,
+            replyTo
+          );
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: false,
+          });
+          continue;
+        }
+
+        const reason = fieldTimeHasSeconds(rawField)
+          ? 'còn giây'
+          : fieldTime
+            ? 'lệch Nội dung'
+            : 'trống';
+        await this.notify(
+          controlChatId,
+          `✏️ Sửa (${reason}): \`${rawField || fieldTime || '(trống)'}\` → \`${contentTime}\``,
+          replyTo
+        );
+        try {
+          detail = await this.editTimeOnDetail(detail, peer, contentTime);
+          session.stats.fixed += 1;
+          fixedThisPass += 1;
+          await this.notify(
+            controlChatId,
+            `✅ Đã chỉnh → ${contentTime} (sửa ${session.stats.fixed} / bỏ qua ${session.stats.skipped})\n⏳ Chờ tin mới rồi Quay lại ×2…`,
+            replyTo
+          );
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: true,
+          });
+        } catch (e) {
+          session.stats.errors += 1;
+          await this.notify(controlChatId, `⚠️ Không chỉnh được: ${e.message}`, replyTo);
+          msg = await this.returnToTransactionList(detail, peer, {
+            afterEdit: false,
+          });
+        }
+      }
+
+      // Hết GD trên trang hiện tại → bấm button loạt tiếp theo (nếu có)
+      flat = await this.getButtons(msg);
+      const nextBtn = findButton(flat, BTN.nextPage);
+      if (nextBtn) {
+        await this.notify(
+          controlChatId,
+          `👉 Sang loạt giao dịch tiếp: ${nextBtn.text}`,
+          replyTo
+        );
+        msg = await this.clickButton(msg, nextBtn.text, peer);
+        continue;
+      }
+
+      // Không còn trang sau; nếu lượt này không sửa gì → xong
+      if (fixedThisPass === 0) {
+        break;
+      }
+      // Có sửa nhưng không còn nút next — quét lại trang hiện tại một vòng
+    }
+
+    const s = this.getSession(controlChatId);
+    const stats = s?.stats || { fixed: 0, skipped: 0, errors: 0 };
+    this.clearSession(controlChatId);
+    await this.notify(
+      controlChatId,
+      [
+        '🏁 WF1 xong — không còn giao dịch lệch thời gian (hoặc hết danh sách).',
+        `Đã sửa: ${stats.fixed}`,
+        `Bỏ qua (đã trùng): ${stats.skipped}`,
+        `Lỗi: ${stats.errors}`,
+      ].join('\n'),
+      replyTo
+    );
+  }
+
+  async tryBack(msg, peer) {
+    return this.returnToTransactionList(msg, peer, { afterEdit: false });
+  }
+
+  async editTimeOnDetail(detailMsg, peer, newTime) {
+    let msg = detailMsg;
+    const flat = await this.getButtons(msg);
+    const timeBtn = findButton(flat, BTN.editTime);
+    if (timeBtn) {
+      msg = await this.clickButton(msg, BTN.editTime, peer);
+    } else {
+      // Một số bot yêu cầu bấm "chỉnh" rồi chọn field — thử button chứa "sửa" / "edit"
+      const editBtn = findButton(flat, /ch[iỉ]nh|s[uử]a|edit/i);
+      if (!editBtn) {
+        throw new Error(
+          `Không thấy button chỉnh thời gian. Buttons: ${flat.map((b) => b.text).join(' | ')}`
+        );
+      }
+      msg = await this.clickButton(msg, editBtn.text, peer);
+      const flat2 = await this.getButtons(msg);
+      const timeBtn2 = findButton(flat2, BTN.editTime) || findButton(flat2, /th[oờ]i\s*gian/i);
+      if (timeBtn2) {
+        msg = await this.clickButton(msg, timeBtn2.text, peer);
+      }
+    }
+    // Gửi giá trị thời gian đúng format
+    await this.bot.client.sendMessage(peer, { message: newTime });
+    await sleep(2000);
+    return this.getLatestMessage(peer);
+  }
+}
+
+module.exports = {
+  Wf1Runner,
+  extractContentTime,
+  extractFieldTime,
+  extractFieldTimeRaw,
+  fieldTimeHasSeconds,
+  shouldSkipTimeEdit,
+  formatEditTime,
+  parseAnyDateTimeInChunk,
+};
