@@ -7,6 +7,7 @@ const config = require('./config');
 const Utils = require('./utils');
 const Ai = require('./ai');
 const ClaudeCode = require('./claude-code');
+const { Wf1Runner } = require('./workflow-wf1');
 const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
@@ -24,6 +25,7 @@ class BankTransactionUserbot {
     this.claudeCodeBusy = false;
     this.claudeCodeBusyChats = new Set();
     this.claudeCodeSuppressOutUntil = new Map();
+    this.wf1 = new Wf1Runner(this);
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -418,6 +420,26 @@ class BankTransactionUserbot {
           this.processedMessages.set(messageKey, currentTime);
           await this.handleTransactionMessage(message, messageText);
           return;
+        }
+      }
+
+      // WF1: đang chờ user chọn button tài khoản
+      if (
+        messageText.trim() &&
+        !String(messageText).startsWith('/') &&
+        this.wf1.isAwaitingUserInput(chatId) &&
+        (this.isOwnerOrAdmin(message) || message.out === true)
+      ) {
+        const chatKeyWf = String(chatId);
+        const suppressUntilWf = this.claudeCodeSuppressOutUntil.get(chatKeyWf) || 0;
+        if (!(message.out && Date.now() < suppressUntilWf)) {
+          this.processedMessages.set(messageKey, currentTime);
+          const handled = await this.wf1.handleUserAccountPick(
+            chatId,
+            messageText,
+            messageId
+          );
+          if (handled) return;
         }
       }
 
@@ -960,6 +982,22 @@ class BankTransactionUserbot {
           return;
         }
         await this.handleClaudeCodeCommand(args, chatId, messageId);
+        break;
+
+      case '/wfbot':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf1.handleWfBotCommand(args, chatId, messageId);
+        break;
+
+      case '/wf1':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf1.handleWf1Command(args, chatId, messageId);
         break;
 
       case '/z':
