@@ -30,8 +30,9 @@ Bot sẽ:
 6. Bấm **Chỉnh sửa giao dịch** → **Chỉnh giao dịch**
 7. Lặp từng giao dịch:
    - Đọc `Nội dung:` (lấy ngày giờ) và `Thời gian:`
+   - Hỗ trợ compact trong Nội dung: `151126-18:34:26` = **15/11/2026 18:34** (DDMMYY-HH:mm:ss, **bỏ giây** khi chỉnh)
    - Trùng → bỏ qua
-   - Khác → chỉnh mục thời gian theo Nội dung (format `dd/mm/yyyy HH:mm:ss`)
+   - Khác → chỉnh mục thời gian theo Nội dung (format gửi: `dd/mm/yyyy HH:mm`)
    - Báo cáo từng bước trong chat
 8. Dừng khi không còn GD lệch thời gian
 

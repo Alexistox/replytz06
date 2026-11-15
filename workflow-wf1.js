@@ -26,35 +26,74 @@ const BTN = {
   nextPage: /ti[eế]p|next|sau|»|›|➡️|xem\s*th[eê]m/i,
 };
 
-/** dd/mm/yyyy HH:mm:ss và biến thể */
-const DT_RE =
+/**
+ * Formats trong Nội dung / Thời gian:
+ * - Compact: 151126-18:34:26 → DDMMYY + giờ (15/11/2026 18:34) — không dùng giây khi chỉnh
+ * - Thường: 15/11/2026 18:34:26 hoặc 15/11/2026 18:34
+ */
+const DT_SLASH_RE =
   /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})[,\s]+(\d{1,2}:\d{2}(?::\d{2})?)/;
+/** DDMMYY-HH:mm[:ss] ví dụ 151126-18:34:26 */
+const DT_COMPACT_RE = /(\d{2})(\d{2})(\d{2})-(\d{1,2}:\d{2}(?::\d{2})?)/;
 
-function normalizeDateTime(datePart, timePart) {
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+
+/** Chuẩn hóa để so sánh / gửi chỉnh sửa — không có giây */
+function formatEditTime(day, month, year, hh, mm) {
+  return `${pad2(day)}/${pad2(month)}/${year} ${pad2(hh)}:${pad2(mm)}`;
+}
+
+function parseTimePart(timePart) {
+  const [hh, mm, ss] = String(timePart).split(':');
+  return {
+    hh: parseInt(hh, 10),
+    mm: parseInt(mm, 10),
+    ss: ss != null ? parseInt(ss, 10) : 0,
+  };
+}
+
+function parseSlashDateTime(datePart, timePart) {
   const d = datePart.replace(/[.\-]/g, '/');
   const [a, b, c] = d.split('/');
   let day;
   let month;
   let year;
   if (String(c).length === 4) {
-    // dd/mm/yyyy or mm/dd/yyyy — ưu tiên dd/mm (VN)
-    day = a.padStart(2, '0');
-    month = b.padStart(2, '0');
+    day = parseInt(a, 10);
+    month = parseInt(b, 10);
     year = c;
   } else if (String(a).length === 4) {
     year = a;
-    month = b.padStart(2, '0');
-    day = c.padStart(2, '0');
+    month = parseInt(b, 10);
+    day = parseInt(c, 10);
   } else {
-    day = a.padStart(2, '0');
-    month = b.padStart(2, '0');
+    day = parseInt(a, 10);
+    month = parseInt(b, 10);
     year = c.length === 2 ? `20${c}` : c;
   }
-  let [hh, mm, ss] = timePart.split(':');
-  hh = hh.padStart(2, '0');
-  mm = mm.padStart(2, '0');
-  ss = (ss || '00').padStart(2, '0');
-  return `${day}/${month}/${year} ${hh}:${mm}:${ss}`;
+  const t = parseTimePart(timePart);
+  return formatEditTime(day, month, year, t.hh, t.mm);
+}
+
+/** 151126-18:34:26 → DD=15 MM=11 YY=26 → 15/11/2026 18:34 */
+function parseCompactDateTime(match) {
+  const day = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const yy = match[3];
+  const year = yy.length === 2 ? `20${yy}` : yy;
+  const t = parseTimePart(match[4]);
+  return formatEditTime(day, month, year, t.hh, t.mm);
+}
+
+function parseAnyDateTimeInChunk(chunk) {
+  const raw = String(chunk || '');
+  const compact = raw.match(DT_COMPACT_RE);
+  if (compact) return parseCompactDateTime(compact);
+  const slash = raw.match(DT_SLASH_RE);
+  if (slash) return parseSlashDateTime(slash[1], slash[2]);
+  return null;
 }
 
 function extractDateTimeFromText(text, labelRe) {
@@ -63,13 +102,16 @@ function extractDateTimeFromText(text, labelRe) {
     const m = raw.match(labelRe);
     if (m) {
       const chunk = m[1] || m[0];
-      const dt = chunk.match(DT_RE);
-      if (dt) return normalizeDateTime(dt[1], dt[2]);
+      const parsed = parseAnyDateTimeInChunk(chunk);
+      if (parsed) return parsed;
     }
   }
-  const all = [...raw.matchAll(new RegExp(DT_RE.source, 'g'))];
-  if (!all.length) return null;
-  return normalizeDateTime(all[0][1], all[0][2]);
+  // Ưu tiên compact trong toàn bộ text
+  const compactAll = [...raw.matchAll(new RegExp(DT_COMPACT_RE.source, 'g'))];
+  if (compactAll.length) return parseCompactDateTime(compactAll[0]);
+  const slashAll = [...raw.matchAll(new RegExp(DT_SLASH_RE.source, 'g'))];
+  if (slashAll.length) return parseSlashDateTime(slashAll[0][1], slashAll[0][2]);
+  return null;
 }
 
 function extractContentTime(text) {
@@ -616,5 +658,6 @@ module.exports = {
   Wf1Runner,
   extractContentTime,
   extractFieldTime,
-  normalizeDateTime,
+  formatEditTime,
+  parseAnyDateTimeInChunk,
 };
