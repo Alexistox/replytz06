@@ -6,6 +6,7 @@ const readline = require('readline');
 const config = require('./config');
 const Utils = require('./utils');
 const Ai = require('./ai');
+const ClaudeCode = require('./claude-code');
 const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
@@ -20,6 +21,8 @@ class BankTransactionUserbot {
     this.aiHistory = new Ai.ChatHistoryStore(config.aiMaxHistory || 12);
     this.controlServer = null;
     this.aiBusyChats = new Set();
+    this.claudeCodeBusy = false;
+    this.claudeCodeBusyChats = new Set();
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -32,6 +35,10 @@ class BankTransactionUserbot {
     const aiInfo = Ai.describeAiSetup(this.settings);
     Utils.log(
       `🧠 AI: ${aiInfo.label}/${aiInfo.model} (${aiInfo.configured ? 'có key' : 'chưa key'}) — auto-reply mặc định TẮT, bật bằng /ai on`
+    );
+    const cc = ClaudeCode.describeSetup();
+    Utils.log(
+      `🦞 Claude Code pilot: ${cc.enabled ? 'bật' : 'tắt'} — binary ${cc.binaryOk ? cc.bin : 'chưa thấy'}; /cc on trong DM với admin`
     );
   }
 
@@ -414,6 +421,17 @@ class BankTransactionUserbot {
       }
 
       if (message.out) {
+        return;
+      }
+
+      // Claude Code pilot (admin only)
+      if (
+        groupSettings.claudeCodePilot === true &&
+        messageText.trim() &&
+        this.isOwnerOrAdmin(message)
+      ) {
+        this.processedMessages.set(messageKey, currentTime);
+        await this.handleClaudeCodePilotMessage(message, messageText);
         return;
       }
 
@@ -919,6 +937,20 @@ class BankTransactionUserbot {
         await this.handleAiCommand(['off'], chatId, messageId);
         break;
 
+      case '/cc':
+      case '/claude':
+      case '/claudecode':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(
+            chatId,
+            messageId,
+            '❌ Chỉ admin mới có thể dùng Claude Code pilot'
+          );
+          return;
+        }
+        await this.handleClaudeCodeCommand(args, chatId, messageId);
+        break;
+
       case '/z':
         if (!this.isOwnerOrAdmin(originalMessage)) {
           await this.sendReply(
@@ -1347,6 +1379,7 @@ class BankTransactionUserbot {
 2. Tự động reply hình ảnh từ user cụ thể trong group cụ thể
 3. Chuyển tiếp tự động tin nhắn (text, ảnh, video, file, albums) với emoji/text triggers
 4. AI chat theo từng nhóm/DM — **mặc định TẮT**, bật bằng \`/ai on\`
+4b. Claude Code pilot — \`/cc on\` (iPhone Telegram → Claude Code VPS) 👑
 5. Control API localhost (ilsac: cổng 3848) để Cursor điều khiển
 
 **Commands - AI chat (👑 admin, theo từng chat — mặc định TẮT):**
@@ -4332,6 +4365,130 @@ Reply vào tin nhắn cần chuyển và nhập ${Utils.hasEmoji(trigger) ? `emo
       messageId,
       '❗ /ai | /ai on|off [chatId] | /ai prompt ... | /ai clear | /ai provider ... | /ai model ...'
     );
+  }
+
+  getClaudeCodePilotState(chatId) {
+    const gs = this.getGroupSettings(chatId);
+    const setup = ClaudeCode.describeSetup();
+    return {
+      enabled: gs.claudeCodePilot === true,
+      setup,
+    };
+  }
+
+  setClaudeCodePilot(chatId, enabled) {
+    const groupId = String(chatId);
+    if (!this.settings.groupSettings) this.settings.groupSettings = {};
+    const current = this.settings.groupSettings[groupId] || { replyEnabled: false };
+    const next = { ...current, claudeCodePilot: enabled === true };
+    if (!enabled) delete next.claudeCodePilot;
+    this.settings.groupSettings[groupId] = next;
+    Utils.saveSettings(this.settings);
+    return this.getClaudeCodePilotState(groupId);
+  }
+
+  async handleClaudeCodeCommand(args, chatId, messageId) {
+    const setup = ClaudeCode.describeSetup();
+    const state = this.getClaudeCodePilotState(chatId);
+
+    if (!args.length) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        [
+          `🦞 Claude Code pilot (chat này): ${state.enabled ? '🟢 BẬT' : '🔴 TẮT'}`,
+          `Binary: ${setup.binaryOk ? setup.bin : '⚠️ chưa tìm thấy claude'}`,
+          `Timeout: ${Math.round(setup.timeoutMs / 1000)}s`,
+          '',
+          'Trên iPhone: nhắn Telegram với userbot này (DM admin).',
+          '/cc on — bật: mọi tin tiếp theo của bạn → Claude Code trên VPS',
+          '/cc off — tắt',
+          '/cc <yêu cầu> — hỏi Claude Code một lần (vd: /cc liệt kê chats rồi gửi xin chào cho id …)',
+          '',
+          'App Claude trên iPhone không gắn trực tiếp session VPS — dùng Telegram.',
+          'VPS cần: claude auth login (một lần).',
+        ].join('\n')
+      );
+      return;
+    }
+
+    const action = String(args[0] || '').toLowerCase();
+    if (action === 'on' || action === 'off') {
+      if (action === 'on' && !setup.enabled) {
+        await this.sendReply(chatId, messageId, '❌ Claude Code pilot bị tắt (CLAUDE_CODE_ENABLED=0)');
+        return;
+      }
+      this.setClaudeCodePilot(chatId, action === 'on');
+      await this.sendReply(
+        chatId,
+        messageId,
+        action === 'on'
+          ? '✅ Đã BẬT Claude Code pilot cho chat này.\nTin nhắn tiếp theo của bạn (admin) sẽ gửi tới Claude Code trên VPS để cầm userbot.'
+          : '❌ Đã TẮT Claude Code pilot cho chat này.'
+      );
+      Utils.log(`🦞 /cc ${action} chat ${chatId}`);
+      return;
+    }
+
+    if (action === 'status') {
+      await this.handleClaudeCodeCommand([], chatId, messageId);
+      return;
+    }
+
+    const prompt = args.join(' ').trim();
+    await this.runClaudeCodeAndReply(chatId, messageId, prompt, { continueSession: true });
+  }
+
+  async handleClaudeCodePilotMessage(message, messageText) {
+    const chatId = message.chatId;
+    const messageId = message.id;
+    await this.runClaudeCodeAndReply(chatId, messageId, messageText, {
+      continueSession: true,
+    });
+  }
+
+  async runClaudeCodeAndReply(chatId, messageId, prompt, { continueSession = true } = {}) {
+    const chatKey = String(chatId);
+    if (this.claudeCodeBusy || this.claudeCodeBusyChats.has(chatKey)) {
+      await this.sendReply(
+        chatId,
+        messageId,
+        '⏳ Claude Code đang xử lý tin trước — gửi lại sau.'
+      );
+      return;
+    }
+
+    this.claudeCodeBusy = true;
+    this.claudeCodeBusyChats.add(chatKey);
+    try {
+      await this.sendReply(chatId, messageId, '🦞 Đang nhờ Claude Code trên VPS…');
+      const result = await ClaudeCode.runPrompt({
+        prompt,
+        cwd: process.cwd(),
+        continueSession,
+      });
+      if (result.ok && result.text) {
+        const text =
+          result.text.length > 3500
+            ? `${result.text.slice(0, 3490)}\n…(cắt)`
+            : result.text;
+        await this.sendReply(chatId, messageId, text);
+        Utils.log(`🦞 Claude Code OK chat ${chatKey} (${result.text.length} chars)`);
+        return;
+      }
+      await this.sendReply(
+        chatId,
+        messageId,
+        `❌ Claude Code: ${result.error || 'không có output'}`
+      );
+      Utils.log(`🦞 Claude Code FAIL chat ${chatKey}: ${result.error}`);
+    } catch (err) {
+      await this.sendReply(chatId, messageId, `❌ Claude Code lỗi: ${err.message}`);
+      Utils.log(`🦞 Claude Code exception: ${err.message}`);
+    } finally {
+      this.claudeCodeBusy = false;
+      this.claudeCodeBusyChats.delete(chatKey);
+    }
   }
 
   async handleAiChatMessage(message, messageText, groupSettings) {

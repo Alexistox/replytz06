@@ -48,6 +48,12 @@ module.exports = {
   controlApiPort: parseInt(process.env.CONTROL_API_PORT || '3848', 10),
   controlApiToken: process.env.CONTROL_API_TOKEN || '',
 
+  // Claude Code pilot (Telegram /cc → claude CLI trên VPS → control-cli)
+  claudeCodeEnabled: process.env.CLAUDE_CODE_ENABLED !== '0',
+  claudeCodeBin: process.env.CLAUDE_CODE_BIN || '',
+  claudeCodeTimeoutMs: parseInt(process.env.CLAUDE_CODE_TIMEOUT_MS || '180000', 10),
+  claudeCodeSystemPrompt: process.env.CLAUDE_CODE_SYSTEM_PROMPT || '',
+
   /** User ID Telegram luôn có quyền admin (không thể gỡ bằng /adremove) */
   permanentAdminUserIds: envList('PERMANENT_ADMIN_USER_IDS').length
     ? envList('PERMANENT_ADMIN_USER_IDS')
