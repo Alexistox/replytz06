@@ -7,7 +7,8 @@ const config = require('./config');
 const Utils = require('./utils');
 const Ai = require('./ai');
 const ClaudeCode = require('./claude-code');
-const { Wf1Runner } = require('./workflow-wf1');
+const { WfRunner } = require('./workflow-wf1');
+const { Wf2BdsdRunner, isPureBdsdList } = require('./workflow-wf2');
 const { createControlServer } = require('./control-server');
 
 class BankTransactionUserbot {
@@ -25,7 +26,8 @@ class BankTransactionUserbot {
     this.claudeCodeBusy = false;
     this.claudeCodeBusyChats = new Set();
     this.claudeCodeSuppressOutUntil = new Map();
-    this.wf1 = new Wf1Runner(this);
+    this.wf1 = new WfRunner(this, { id: 'wf1', label: 'WF1' });
+    this.wf2 = new Wf2BdsdRunner(this);
     
     // Migrate old settings format if needed
     this.migrateOldSettings();
@@ -381,6 +383,24 @@ class BankTransactionUserbot {
     this.processingMessages.add(messageKey);
 
     try {
+      // WF2: list thuần /bdsd… (không cần /wf2) — chặn trước parseCommand
+      if (
+        (this.isOwnerOrAdmin(message) || message.out === true) &&
+        (this.wf2.isAwaitingUserInput(chatId) || isPureBdsdList(messageText))
+      ) {
+        const chatKeyWf2 = String(chatId);
+        const suppressUntilWf2 = this.claudeCodeSuppressOutUntil.get(chatKeyWf2) || 0;
+        if (!(message.out && Date.now() < suppressUntilWf2)) {
+          this.processedMessages.set(messageKey, currentTime);
+          const handledWf2 = await this.wf2.handleIncomingList(
+            chatId,
+            messageText,
+            messageId
+          );
+          if (handledWf2) return;
+        }
+      }
+
       // Kiểm tra commands trước (cho phép chính mình sử dụng commands)
       if (messageText.startsWith('/')) {
         // Mark as processed cho commands
@@ -985,6 +1005,7 @@ class BankTransactionUserbot {
         break;
 
       case '/wfbot':
+      case '/wf1bot':
         if (!this.isOwnerOrAdmin(originalMessage)) {
           await this.sendReply(chatId, messageId, '❌ Chỉ admin');
           return;
@@ -992,12 +1013,28 @@ class BankTransactionUserbot {
         await this.wf1.handleWfBotCommand(args, chatId, messageId);
         break;
 
+      case '/wf2bot':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf2.handleWfBotCommand(args, chatId, messageId);
+        break;
+
       case '/wf1':
         if (!this.isOwnerOrAdmin(originalMessage)) {
           await this.sendReply(chatId, messageId, '❌ Chỉ admin');
           return;
         }
-        await this.wf1.handleWf1Command(args, chatId, messageId);
+        await this.wf1.handleWfCommand(args, chatId, messageId);
+        break;
+
+      case '/wf2':
+        if (!this.isOwnerOrAdmin(originalMessage)) {
+          await this.sendReply(chatId, messageId, '❌ Chỉ admin');
+          return;
+        }
+        await this.wf2.handleWfCommand(args, chatId, messageId, messageText);
         break;
 
       case '/z':
