@@ -130,6 +130,29 @@ function extractFieldTime(text) {
   );
 }
 
+/** Lấy raw text sau "Thời gian:" để biết còn giây hay không */
+function extractFieldTimeRaw(text) {
+  const m = String(text || '').match(/th[oờ]i\s*gian\s*:\s*([^\n]+)/i);
+  return m ? String(m[1]).trim() : '';
+}
+
+/**
+ * Mục Thời gian còn giây? (18:34:26 hoặc ...-18:34:26)
+ * → vẫn phải chỉnh dù ngày/giờ-phút đã khớp Nội dung.
+ */
+function fieldTimeHasSeconds(rawField) {
+  const raw = String(rawField || '');
+  if (/\d{1,2}:\d{2}:\d{2}/.test(raw)) return true;
+  return false;
+}
+
+/** true = đã đúng format cuối (khớp Nội dung và không còn giây) → bỏ qua */
+function shouldSkipTimeEdit(contentTime, fieldTime, rawField) {
+  if (!contentTime || !fieldTime) return false;
+  if (fieldTimeHasSeconds(rawField)) return false;
+  return fieldTime === contentTime;
+}
+
 function flattenButtons(rows) {
   if (!rows) return [];
   const out = [];
@@ -536,6 +559,7 @@ class Wf1Runner {
         const body = String(detail?.message || detail?.text || '');
         const contentTime = extractContentTime(body);
         const fieldTime = extractFieldTime(body);
+        const rawField = extractFieldTimeRaw(body);
 
         if (!contentTime) {
           session.stats.errors += 1;
@@ -548,20 +572,26 @@ class Wf1Runner {
           continue;
         }
 
-        if (fieldTime && fieldTime === contentTime) {
+        // Chỉ bỏ qua khi đã khớp Nội dung VÀ mục Thời gian không còn giây
+        if (shouldSkipTimeEdit(contentTime, fieldTime, rawField)) {
           session.stats.skipped += 1;
           await this.notify(
             controlChatId,
-            `⏭️ Trùng (${contentTime}) — bỏ qua.`,
+            `⏭️ Đã đúng (${contentTime}, không giây) — bỏ qua.`,
             replyTo
           );
           msg = await this.tryBack(detail, peer);
           continue;
         }
 
+        const reason = fieldTimeHasSeconds(rawField)
+          ? 'còn giây'
+          : fieldTime
+            ? 'lệch Nội dung'
+            : 'trống';
         await this.notify(
           controlChatId,
-          `✏️ Sửa: \`${fieldTime || '(trống)'}\` → \`${contentTime}\``,
+          `✏️ Sửa (${reason}): \`${rawField || fieldTime || '(trống)'}\` → \`${contentTime}\``,
           replyTo
         );
         try {
@@ -658,6 +688,9 @@ module.exports = {
   Wf1Runner,
   extractContentTime,
   extractFieldTime,
+  extractFieldTimeRaw,
+  fieldTimeHasSeconds,
+  shouldSkipTimeEdit,
   formatEditTime,
   parseAnyDateTimeInChunk,
 };
