@@ -304,7 +304,7 @@ class Wf2BdsdRunner {
     await this.bot.sendReply(
       controlChatId,
       replyTo,
-      `🚀 WF2: sẽ gửi **${lines.length}** lệnh `/bdsd` → \`${this.getBotPeerConfig()}\``
+      `🚀 WF2: sẽ gửi **${lines.length}** lệnh /bdsd → \`${this.getBotPeerConfig()}\``
     );
 
     this.runBatch(controlChatId).catch(async (err) => {
