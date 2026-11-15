@@ -18,8 +18,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const BTN = {
   accountValid: /t[aà]i\s*kho[aả]n\s*c[oò]n\s*h[aạ]n/i,
+  // Một số bot: "Chỉnh sửa giao dịch"; bot này: "✏️ Chỉnh Giao Dịch"
   editTxMenu: /ch[iỉ]nh\s*s[uử]a\s*giao\s*d[iị]ch/i,
-  editTx: /^ch[iỉ]nh\s*giao\s*d[iị]ch$/i,
+  editTx: /ch[iỉ]nh\s*giao\s*d[iị]ch/i,
   editTime: /th[oờ]i\s*gian|ch[iỉ]nh.*gi[oờ]|s[uử]a.*th[oờ]i/i,
   back: /quay\s*l[aạ]i|back|tr[oờ]|h[uủ]y|cancel|«|‹|⬅️/i,
   nextPage: /ti[eế]p|next|sau|»|›|➡️|xem\s*th[eê]m/i,
@@ -415,8 +416,13 @@ class Wf1Runner {
     let msg = session.lastMsg || (await this.getLatestMessage(peer));
     // Click account button
     msg = await this.clickButton(msg, session.chosenAccount, peer);
-    await this.notify(controlChatId, '👆 Chỉnh sửa giao dịch…', replyTo);
-    msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+
+    // Có bot có 2 bước (menu rồi chỉnh); bot test chỉ có "✏️ Chỉnh Giao Dịch"
+    const flatAfterAccount = await this.getButtons(msg);
+    if (findButton(flatAfterAccount, BTN.editTxMenu)) {
+      await this.notify(controlChatId, '👆 Chỉnh sửa giao dịch…', replyTo);
+      msg = await this.clickButton(msg, BTN.editTxMenu, peer);
+    }
 
     await this.notify(controlChatId, '👆 Chỉnh giao dịch…', replyTo);
     msg = await this.clickButton(msg, BTN.editTx, peer);
@@ -429,6 +435,7 @@ class Wf1Runner {
     if (BTN.back.test(t) || BTN.nextPage.test(t)) return false;
     if (BTN.editTxMenu.test(t) || BTN.editTx.test(t)) return false;
     if (BTN.accountValid.test(t)) return false;
+    if (/t[aạ]o\s*giao\s*d[iị]ch/i.test(t)) return false;
     // Prefer buttons that look like tx rows (have money/date/id) — else any remaining
     return true;
   }
