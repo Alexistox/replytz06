@@ -48,11 +48,14 @@ function describeSetup() {
 }
 
 function runOnce({ prompt, cwd, continueSession, timeoutMs, bin, systemPrompt }) {
+  // Không dùng --dangerously-skip-permissions: Claude Code từ chối flag này khi chạy root.
+  // Pre-allow Bash để control-cli.js chạy được ở print-mode không tương tác.
   const args = [
     '-p',
     '--output-format',
     'text',
-    '--dangerously-skip-permissions',
+    '--allowedTools',
+    'Bash',
     '--append-system-prompt',
     systemPrompt,
   ];
